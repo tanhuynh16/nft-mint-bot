@@ -1,0 +1,40 @@
+# Ethereum mainnet — priority-fee auction.
+#
+# Unlike the Orbit configs, fee strategy genuinely affects inclusion order here, and
+# broadcasting to several endpoints improves propagation. Pre-signing is NOT usable:
+# the fee must be decided against the base fee at send time.
+network:
+  name: ethereum
+  chainId: 1
+  orderingModel: priority-auction
+  feeModel: eip1559
+  blockExplorerUrl: https://etherscan.io
+
+rpc:
+  endpoints:
+    - ${RPC_PRIMARY}
+    - ${RPC_SECONDARY}
+  parallelBroadcast: true
+  timeoutMs: 10000
+
+mint:
+  collectionSlug: xcopunks
+  quantity: 1
+  maxRetries: 20
+  retryDelayMs: 100
+  waitForStage: true
+
+gas:
+  strategy: aggressive
+  priorityMultiplier: 1.5
+  maxFeeMultiplier: 2.0
+  maxGasGwei: 200
+  gasLimitBuffer: 1.25
+
+execution:
+  mode: preflight
+  waitForConfirmation: true
+  confirmationBlocks: 1
+
+wallet:
+  privateKeyEnv: PRIVATE_KEY

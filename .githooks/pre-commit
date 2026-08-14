@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Blocks commits that would leak key material.
+#
+# .gitignore is the first line of defence, but it cannot stop `git add -f`, and it does
+# nothing about a key pasted into a source or config file. This hook inspects what is
+# actually staged, so it judges the commit rather than the working tree.
+#
+# Enable in a fresh clone with:  git config core.hooksPath .githooks
+# Deliberate override:           git commit --no-verify
+
+set -uo pipefail
+
+fail() {
+  echo ""
+  echo "  COMMIT BLOCKED: $1"
+  echo "  $2"
+  echo ""
+  echo "  Unstage it, or override with --no-verify if you are certain."
+  echo ""
+  exit 1
+}
+
+# Added/copied/modified/renamed paths only — deletions cannot leak anything.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+
+  case "$file" in
+    .env.example|*/.env.example) continue ;;
+    .env|.env.*|*/.env|*/.env.*)
+      fail "staged an environment file" "$file holds real secrets; only .env.example belongs in git."
+      ;;
+    *.key|*.pem|*.p12|*.pfx)
+      fail "staged a key or certificate file" "$file"
+      ;;
+  esac
+done <<< "$staged"
+
+# Scan staged content for a 64-hex private key. Only added lines (^+) are checked, so
+# pre-existing history does not re-trigger on every later commit.
+#
+# The trailing (non-hex|end-of-line) guard is what keeps this usable: a private key is
+# *exactly* 0x + 64 hex, whereas ABI calldata is 0x + an 8-hex selector + 64 hex per
+# argument. Without the guard, every encoded contract call in the tests trips the hook —
+# and a hook that cries wolf is one you learn to bypass.
+#
+# Known limitation: a transaction hash is also 32 bytes, so a hardcoded 0x-prefixed hash
+# trips this too. That is not fixable by pattern - a hash and a key are the same shape.
+# Prefer a truncated hash in fixtures; use --no-verify if you genuinely need the full one.
+key_re='^\+.*0x[a-fA-F0-9]{64}([^a-fA-F0-9]|$)'
+match=$(git diff --cached -U0 | grep -nE "$key_re" | head -1)
+if [ -n "$match" ]; then
+  fail "staged something shaped like a private key" "$(echo "$match" | cut -c1-100)"
+fi
+
+exit 0
