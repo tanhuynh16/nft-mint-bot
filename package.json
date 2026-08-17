@@ -12,6 +12,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli/index.ts",
+    "predoctor": "node scripts/check-node.cjs",
+    "doctor": "tsx src/cli/index.ts doctor",
+    "preinspect": "node scripts/check-node.cjs",
+    "inspect": "tsx src/cli/index.ts inspect",
+    "predry-run": "node scripts/check-node.cjs",
+    "dry-run": "tsx src/cli/index.ts dry-run",
+    "premint": "node scripts/check-node.cjs",
+    "mint": "tsx src/cli/index.ts start",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

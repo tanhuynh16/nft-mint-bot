@@ -33,12 +33,17 @@ optimisation. `doctor` warms and measures it for you.
 
 ## Setup
 
-Requires **Node 20+**.
+Requires **Node 20+** (`.nvmrc` pins it; run `nvm use`). On an older node the CLI stops
+with an explicit message rather than a stray `Object.hasOwn is not a function`.
 
 ```bash
+nvm use
 npm install
-cp .env.example .env      # then fill it in — .env is gitignored
+cp .env.example .env      # then fill in .env — NOT .env.example, which is tracked
 ```
+
+Fill in the **copy**. `.env.example` is committed to git, so a real value placed there
+is a leak; a pre-commit hook rejects it, but the habit is what matters.
 
 `.env` needs `PRIVATE_KEY` (a dedicated hot wallet, minimally funded),
 `OPENSEA_API_KEY`, and RPC URLs. Optionally `OPENSEA_BEARER_TOKEN` (an OAuth token with
@@ -46,16 +51,24 @@ the `read:eligibility` scope) to check eligibility without spending a mint attem
 
 ## Commands
 
+There is no global `mint-bot` binary — run through npm. Note the `--` separating npm's
+arguments from the bot's:
+
 ```bash
-mint-bot doctor  --config config/robinhood-testnet.yaml   # environment + RTT audit
-mint-bot inspect --config config/robinhood-testnet.yaml   # what the Drops API knows
-mint-bot dry-run --config config/robinhood-testnet.yaml   # build + simulate, no broadcast
-mint-bot start   --config config/robinhood.yaml --quantity 2
+nvm use                                                    # Node 20+, reads .nvmrc
+
+npm run doctor  -- --config config/robinhood-testnet.yaml  # environment + RTT audit
+npm run inspect -- --config config/robinhood-testnet.yaml  # what the Drops API knows
+npm run dry-run -- --config config/robinhood-testnet.yaml  # build + simulate, no broadcast
+npm run mint    -- --config config/robinhood.yaml --quantity 2
 ```
 
 Run them in that order. `inspect` is the one that settles whether the OpenSea Drops API
 covers your target at all — a 404 there means the collection mints through its own
 contract, and you pass `--contract 0x...` to use the direct SeaDrop path instead.
+
+The mint command is `mint`, not `start`, so that a bare `npm start` cannot fire a
+real mint by accident.
 
 ## Execution modes
 

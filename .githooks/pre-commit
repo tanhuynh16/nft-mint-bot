@@ -29,7 +29,20 @@ while IFS= read -r file; do
   [ -z "$file" ] && continue
 
   case "$file" in
-    .env.example|*/.env.example) continue ;;
+    .env.example|*/.env.example)
+      # The template is allowed in git, but only with empty values. Exempting it by
+      # path alone is how a real API key once reached the index: the content scan
+      # below only recognises 64-hex private keys, so an API-key-shaped secret sailed
+      # straight through. A filled-in template is always a mistake, never an intent.
+      filled=$(git show ":$file" 2>/dev/null \
+        | grep -nE '^[A-Z0-9_]*(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*=.+' \
+        | head -1)
+      if [ -n "$filled" ]; then
+        fail "staged $file with a real value filled in" \
+             "$(echo "$filled" | sed -E 's/=.*/=<redacted>/') — put real values in .env, not the template."
+      fi
+      continue
+      ;;
     .env|.env.*|*/.env|*/.env.*)
       fail "staged an environment file" "$file holds real secrets; only .env.example belongs in git."
       ;;
