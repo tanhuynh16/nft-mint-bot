@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Must stay first: rejects an unsupported Node before viem is evaluated. See the module.
+import './engine-check.js';
 import { Command } from 'commander';
 import { startCommand } from './start.js';
 import { doctorCommand } from './doctor.js';
