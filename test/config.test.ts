@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { configSchema } from '../src/config/schema.js';
+import { loadConfig } from '../src/config/loader.js';
 
 const base = {
   network: { name: 'robinhood', chainId: 4663, orderingModel: 'fcfs', feeModel: 'orbit' },
@@ -67,5 +71,70 @@ describe('config schema', () => {
   it('requires at least one RPC endpoint', () => {
     const result = configSchema.safeParse({ ...base, rpc: { endpoints: [] } });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('env interpolation', () => {
+  let dir: string | undefined;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  /** Writes a config whose single RPC endpoint is the reference under test. */
+  function load(reference: string, env: NodeJS.ProcessEnv) {
+    dir = mkdtempSync(join(tmpdir(), 'mintbot-cfg-'));
+    const file = join(dir, 'c.yaml');
+    writeFileSync(
+      file,
+      [
+        'network:',
+        '  name: robinhood',
+        '  chainId: 4663',
+        '  orderingModel: fcfs',
+        '  feeModel: orbit',
+        'rpc:',
+        `  endpoints: ["${reference}"]`,
+        'mint:',
+        '  collectionSlug: xcopunks',
+        '  quantity: 1',
+        'gas:',
+        '  maxGasGwei: 10',
+      ].join('\n'),
+    );
+    return loadConfig(file, env);
+  }
+
+  it('substitutes a set variable', () => {
+    const { config } = load('${BASE_RPC}', { BASE_RPC: 'https://set.example.com' });
+    expect(config.rpc.endpoints[0]).toBe('https://set.example.com');
+  });
+
+  it('throws on an unset variable that has no default', () => {
+    // This is what protects the values a run cannot work without.
+    expect(() => load('${BASE_RPC}', {})).toThrow(/BASE_RPC/);
+  });
+
+  it('falls back to the inline default when the variable is unset', () => {
+    const { config } = load('${BASE_RPC:-https://fallback.example.com}', {});
+    expect(config.rpc.endpoints[0]).toBe('https://fallback.example.com');
+  });
+
+  it('prefers the variable over its default when both exist', () => {
+    const { config } = load('${BASE_RPC:-https://fallback.example.com}', {
+      BASE_RPC: 'https://override.example.com',
+    });
+    expect(config.rpc.endpoints[0]).toBe('https://override.example.com');
+  });
+
+  it('treats an empty variable as unset, so BASE_RPC= behaves like an omitted line', () => {
+    const { config } = load('${BASE_RPC:-https://fallback.example.com}', { BASE_RPC: '' });
+    expect(config.rpc.endpoints[0]).toBe('https://fallback.example.com');
+  });
+
+  it('keeps a URL containing a path and query intact in the default', () => {
+    const { config } = load('${X:-https://rpc.example.com/v2/abc?k=1}', {});
+    expect(config.rpc.endpoints[0]).toBe('https://rpc.example.com/v2/abc?k=1');
   });
 });

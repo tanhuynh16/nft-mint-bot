@@ -112,10 +112,15 @@ export async function doctorCommand(configPath: string): Promise<number> {
     }
 
     const paymentHealth = await ctx.payment.rpc.probe();
+    const configured = config.rpc.paymentEndpoints[paymentChain];
+    const source = configured && configured.length > 0 ? 'from config' : 'built-in default';
     checks.push({
       name: 'payment chain rpc',
       ok: paymentHealth.some((h) => h.ok),
-      detail: `${paymentChain} — ${paymentHealth.map((h) => `${h.latencyMs}ms`).join(', ')}`,
+      detail:
+        `${paymentChain} — ` +
+        paymentHealth.map((h) => `${new URL(h.url).host} ${h.latencyMs}ms`).join(', ') +
+        ` (${source})`,
     });
 
     try {

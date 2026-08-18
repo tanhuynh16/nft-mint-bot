@@ -3,7 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { config as loadDotenv } from 'dotenv';
 import { loadConfig } from '../config/loader.js';
 import { resolveChain, type ResolvedChain } from '../chains/registry.js';
-import { getChainProfileBySlug, supportedPaymentChains } from '../chains/profiles.js';
+import {
+  defaultRpcUrls,
+  getChainProfileBySlug,
+  supportedPaymentChains,
+} from '../chains/profiles.js';
 import { NATIVE_TOKEN_ADDRESS } from '../config/schema.js';
 import { CrossChainDropProvider } from '../providers/crosschain-drop-provider.js';
 import { createSigner } from '../wallet/signer.js';
@@ -161,15 +165,27 @@ function buildPaymentContext(
     );
   }
 
-  const endpoints = config.rpc.paymentEndpoints[slug];
-  if (!endpoints || endpoints.length === 0) {
-    throw new Error(`No rpc.paymentEndpoints entry for payment chain "${slug}".`);
+  // Config override first, then the chain's built-in public endpoint. Selecting a
+  // payment network therefore switches RPCs on its own, with no second config edit.
+  const configured = config.rpc.paymentEndpoints[slug];
+  const endpoints =
+    configured && configured.length > 0 ? configured : defaultRpcUrls(profile);
+  const endpointSource = configured && configured.length > 0 ? 'config' : 'built-in default';
+
+  if (endpoints.length === 0) {
+    throw new Error(
+      `No RPC endpoint for payment chain "${slug}" — it has no built-in default, so set ` +
+        `rpc.paymentEndpoints.${slug} in your config.`,
+    );
   }
 
   logger.warn(
     {
       paymentChain: slug,
       paymentToken: token.toLowerCase() === NATIVE_TOKEN_ADDRESS ? 'native' : token,
+      // Named explicitly so a shared public endpoint is never a silent surprise.
+      rpc: new URL(endpoints[0]!).host,
+      rpcSource: endpointSource,
     },
     'cross-chain payment selected — a swap, bridge and relay add seconds to minutes; ' +
       'use payment.mode: native for a competitive mint',
@@ -189,7 +205,10 @@ function buildPaymentContext(
     rpc: {
       ...config.rpc,
       endpoints,
-      ...(profile.sequencerUrl ? { submitEndpoint: profile.sequencerUrl } : {}),
+      // Explicitly set, never inherited: spreading config.rpc carries the *mint* chain's
+      // submitEndpoint, which would send payment transactions to the wrong chain's
+      // sequencer. undefined makes resolveChain fall back to endpoints[0].
+      submitEndpoint: profile.sequencerUrl,
     },
   };
 

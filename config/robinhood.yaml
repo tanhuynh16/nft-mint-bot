@@ -17,12 +17,37 @@ rpc:
   parallelBroadcast: false
   timeoutMs: 10000
 
+  # Every network you can pay from. Changing mint.payment.chain below switches to the
+  # matching entry automatically — nothing else to edit.
+  #
+  # Each falls back to a working public endpoint when its env var is unset. Set the var
+  # in .env to use a private RPC (Alchemy, QuickNode); those URLs carry API keys, so
+  # keep them out of this file, which is committed.
+  paymentEndpoints:
+    ethereum:  ["${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}"]
+    base:      ["${BASE_RPC:-https://mainnet.base.org}"]
+    arbitrum:  ["${ARBITRUM_RPC:-https://arb1.arbitrum.io/rpc}"]
+    optimism:  ["${OPTIMISM_RPC:-https://mainnet.optimism.io}"]
+    polygon:   ["${POLYGON_RPC:-https://polygon.drpc.org}"]
+    robinhood: ["${RPC_PRIMARY}"]
+
 mint:
   collectionSlug: xcopunks
   quantity: 1
   maxRetries: 20
   retryDelayMs: 100
   waitForStage: true
+
+  payment:
+    # native (default): pay on the chain the drop is deployed to. One transaction, no
+    #   relay — always the fastest, and what a competitive mint should use.
+    mode: native
+
+    # cross-chain: pay with a token held on another network. Adds a swap, bridge and
+    #   relay (seconds to minutes). Run `npm run payments` to list your balances.
+    # mode: cross-chain
+    # chain: base
+    # token: "0x0000000000000000000000000000000000000000"   # 0x0 = that chain's native
 
 gas:
   strategy: normal
