@@ -204,15 +204,10 @@ export const configSchema = z
             'on a live swap quote. Set execution.presign: false.',
         });
       }
-      if (cfg.rpc.paymentEndpoints[cfg.mint.payment.chain] === undefined) {
-        ctx.addIssue({
-          code: 'custom',
-          path: ['rpc', 'paymentEndpoints'],
-          message:
-            `payment.chain is "${cfg.mint.payment.chain}" but rpc.paymentEndpoints has no ` +
-            `entry for it. The transactions execute on that chain, so it needs an RPC URL.`,
-        });
-      }
+      // No paymentEndpoints entry is required any more: every known chain carries a
+      // built-in public RPC, so choosing a network is enough on its own. Whether the
+      // chain is one the bot can execute on is checked at context build, where the
+      // profile table lives.
     }
 
     if (cfg.execution.presign && cfg.execution.mode !== 'race') {

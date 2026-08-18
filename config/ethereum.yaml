@@ -17,6 +17,15 @@ rpc:
   parallelBroadcast: true
   timeoutMs: 10000
 
+  # Networks available for cross-chain payment. Selecting mint.payment.chain switches
+  # to the matching entry; set the env var to override the public default.
+  paymentEndpoints:
+    ethereum:  ["${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}"]
+    base:      ["${BASE_RPC:-https://mainnet.base.org}"]
+    arbitrum:  ["${ARBITRUM_RPC:-https://arb1.arbitrum.io/rpc}"]
+    optimism:  ["${OPTIMISM_RPC:-https://mainnet.optimism.io}"]
+    polygon:   ["${POLYGON_RPC:-https://polygon.drpc.org}"]
+
 mint:
   collectionSlug: xcopunks
   quantity: 1

@@ -62,7 +62,9 @@ export const CHAIN_PROFILES: Record<number, ChainProfile> = {
     chain: polygon,
     orderingModel: 'priority-auction',
     feeModel: 'eip1559',
-    openseaChain: 'matic',
+    // OpenSea's slug is "polygon"; the older "matic" is no longer what the API returns
+    // or accepts (verified against GET /api/v2/chains).
+    openseaChain: 'polygon',
   },
   [base.id]: {
     // OP-stack: a single sequencer orders by arrival, so priority fees do not reorder.
@@ -113,6 +115,19 @@ export function getChainProfile(chainId: number): ChainProfile | undefined {
 export function getChainProfileBySlug(slug: string): ChainProfile | undefined {
   const wanted = slug.toLowerCase();
   return Object.values(CHAIN_PROFILES).find((p) => p.openseaChain === wanted);
+}
+
+/**
+ * The chain's built-in public RPC URLs, used when the config names no override.
+ *
+ * These come from the viem chain definition rather than a hardcoded list here, so they
+ * track viem's maintenance instead of going stale in this file. Good enough for the
+ * payment side — a cross-chain mint is already relayed and not latency-critical — but
+ * they are shared public endpoints, so `rpc.paymentEndpoints` should override them for
+ * anything that matters.
+ */
+export function defaultRpcUrls(profile: ChainProfile): string[] {
+  return [...profile.chain.rpcUrls.default.http];
 }
 
 /** OpenSea slugs the bot can execute payment transactions on. */

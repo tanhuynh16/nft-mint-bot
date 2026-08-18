@@ -85,11 +85,30 @@ mint:
     mode: cross-chain
     chain: base                                          # OpenSea chain slug
     token: "0x0000000000000000000000000000000000000000"  # 0x0 = native token
+```
 
+**Those lines are the whole change.** The configs ship with an RPC for every payment
+network, so switching `chain:` from `base` to `optimism` switches the RPC with it —
+nothing else to edit:
+
+```yaml
 rpc:
   paymentEndpoints:
-    base: ["https://mainnet.base.org"]                   # the steps execute here
+    ethereum:  ["${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}"]
+    base:      ["${BASE_RPC:-https://mainnet.base.org}"]
+    arbitrum:  ["${ARBITRUM_RPC:-https://arb1.arbitrum.io/rpc}"]
+    optimism:  ["${OPTIMISM_RPC:-https://mainnet.optimism.io}"]
+    polygon:   ["${POLYGON_RPC:-https://polygon.drpc.org}"]
 ```
+
+Each falls back to a public endpoint when its env var is unset. For a private RPC, set
+just that one variable in `.env` —
+`BASE_RPC=https://base-mainnet.g.alchemy.com/v2/KEY`. Those URLs carry API keys, which
+is why they belong in `.env` and not in the committed config. A chain left out of
+`paymentEndpoints` entirely still works, falling back to its built-in default.
+
+`doctor` names the endpoint in use and whether it came from your config or the built-in
+default, so a shared public RPC is never a silent surprise.
 
 Run `npm run payments` to list your balances across chains with their token addresses,
 rather than guessing.

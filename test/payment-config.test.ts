@@ -74,17 +74,23 @@ describe('cross-chain payment config', () => {
     ).toBe(false);
   });
 
-  it('requires an RPC endpoint for the payment chain', () => {
-    // The steps execute there, so without an endpoint the run cannot proceed. Catching
-    // it in the schema beats discovering it after the stage opens.
+  it('does not require a paymentEndpoints entry — known chains carry a built-in RPC', () => {
+    // Choosing a payment network is enough on its own; requiring a second config edit
+    // to name an RPC is exactly the friction this replaced.
     const result = configSchema.safeParse({
       ...base,
       mint: { ...base.mint, payment: crossChain },
     });
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(JSON.stringify(result.error.issues)).toMatch(/paymentEndpoints/);
-    }
+    expect(result.success).toBe(true);
+  });
+
+  it('still accepts an explicit override', () => {
+    const parsed = configSchema.parse({
+      ...base,
+      rpc: withBaseRpc,
+      mint: { ...base.mint, payment: crossChain },
+    });
+    expect(parsed.rpc.paymentEndpoints.base).toEqual(['https://mainnet.base.org']);
   });
 });
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { resolveChain } from '../src/chains/registry.js';
+import {
+  CHAIN_PROFILES,
+  defaultRpcUrls,
+  getChainProfileBySlug,
+  supportedPaymentChains,
+} from '../src/chains/profiles.js';
 import { configSchema } from '../src/config/schema.js';
 
 function parse(overrides: Record<string, unknown>) {
@@ -92,5 +98,60 @@ describe('resolveChain', () => {
       }),
     );
     expect(resolved.orderingModel).toBe('priority-auction');
+  });
+});
+
+describe('payment chain slugs', () => {
+  /**
+   * The exact `chain` identifiers OpenSea's GET /api/v2/chains returns for the networks
+   * the bot can execute on. A stale slug here is invisible until a mint is attempted and
+   * the API rejects it — "matic" was wrong for Polygon and only surfaced when a run
+   * against that network failed.
+   */
+  const OPENSEA_SLUGS = ['ethereum', 'optimism', 'polygon', 'base', 'arbitrum', 'robinhood'];
+
+  it.each(OPENSEA_SLUGS)('resolves the OpenSea slug "%s" to a profile', (slug) => {
+    expect(getChainProfileBySlug(slug)).toBeDefined();
+  });
+
+  it('does not resolve the retired "matic" slug', () => {
+    expect(getChainProfileBySlug('matic')).toBeUndefined();
+  });
+
+  it('is case-insensitive, since slugs arrive from config and the API alike', () => {
+    expect(getChainProfileBySlug('BASE')?.chain.id).toBe(8453);
+  });
+
+  it('returns undefined for an unknown chain rather than guessing', () => {
+    expect(getChainProfileBySlug('notachain')).toBeUndefined();
+  });
+
+  it('lists every supported chain', () => {
+    expect(supportedPaymentChains()).toEqual(expect.arrayContaining(OPENSEA_SLUGS));
+  });
+});
+
+describe('built-in RPC defaults', () => {
+  it('gives every profile at least one usable https endpoint', () => {
+    // This is what lets choosing a payment network switch RPCs with no config edit.
+    for (const profile of Object.values(CHAIN_PROFILES)) {
+      const urls = defaultRpcUrls(profile);
+      expect(urls.length).toBeGreaterThan(0);
+      expect(urls[0]).toMatch(/^https:\/\//);
+    }
+  });
+
+  it('returns a copy, so a caller cannot mutate the shared chain definition', () => {
+    const profile = getChainProfileBySlug('base')!;
+    defaultRpcUrls(profile).push('https://injected.example.com');
+    expect(defaultRpcUrls(profile)).not.toContain('https://injected.example.com');
+  });
+
+  it('points each chain at its own network, not a shared one', () => {
+    // Guards the class of bug where one chain's endpoint leaks into another's config.
+    const hosts = ['ethereum', 'base', 'arbitrum', 'optimism', 'polygon'].map(
+      (s) => new URL(defaultRpcUrls(getChainProfileBySlug(s)!)[0]!).host,
+    );
+    expect(new Set(hosts).size).toBe(hosts.length);
   });
 });
