@@ -67,7 +67,53 @@ const rpcSchema = z.object({
    */
   parallelBroadcast: z.boolean().default(false),
   timeoutMs: z.number().int().positive().default(10_000),
+  /**
+   * RPC endpoints for chains other than the mint chain, keyed by OpenSea chain slug.
+   * Required only for cross-chain payment, where the transactions execute on the
+   * payment chain rather than the drop's chain.
+   *
+   *   paymentEndpoints:
+   *     base: ["https://mainnet.base.org"]
+   */
+  paymentEndpoints: z.record(z.string(), z.array(z.string().url()).min(1)).default({}),
 });
+
+/** Zero address means "the chain's native token" in OpenSea's payment schema. */
+export const NATIVE_TOKEN_ADDRESS = '0x0000000000000000000000000000000000000000';
+
+/**
+ * How the mint price is paid.
+ *
+ * `native` is the default and the fast path: one transaction on the chain the NFT
+ * contract is deployed to, no swap and no bridge. Any competitive mint wants this.
+ *
+ * `cross-chain` spends a token held on another chain, routed through OpenSea's relay.
+ * That adds a swap, a bridge and a relay hop — seconds to minutes — so it exists for
+ * convenience, never for winning a contested drop.
+ *
+ * A discriminated union rather than optional fields: it makes the choice visible in the
+ * config file, and stops a half-edited `payment` block from quietly doing the wrong
+ * thing (leftover chain/token under `native` is an error, not silently ignored).
+ */
+const paymentSchema = z.discriminatedUnion('mode', [
+  // strict: a leftover `chain`/`token` under native must fail loudly. Zod strips unknown
+  // keys by default, which would let a half-reverted config look like cross-chain while
+  // silently paying natively.
+  z.strictObject({
+    mode: z.literal('native'),
+  }),
+  z.strictObject({
+    mode: z.literal('cross-chain'),
+    /** OpenSea chain slug the payment token lives on, e.g. "base", "ethereum". */
+    chain: z.string().min(1),
+    /** Token contract address; the zero address selects the native token. */
+    token: z
+      .string()
+      .regex(/^0x[a-fA-F0-9]{40}$/, 'must be a 0x-prefixed 20-byte token address'),
+  }),
+]);
+
+export type PaymentConfig = z.infer<typeof paymentSchema>;
 
 const mintSchema = z.object({
   collectionSlug: z.string().min(1),
@@ -78,6 +124,7 @@ const mintSchema = z.object({
   waitForStage: z.boolean().default(true),
   /** Give up waiting after this long. 0 disables the timeout. */
   waitTimeoutMs: z.number().int().min(0).default(0),
+  payment: paymentSchema.prefault({ mode: 'native' }),
 });
 
 const gasSchema = z.object({
@@ -134,6 +181,40 @@ export const configSchema = z
     journal: journalSchema.prefault({}),
   })
   .superRefine((cfg, ctx) => {
+    if (cfg.mint.payment.mode === 'cross-chain') {
+      // These express opposite intents. race/presign exist to shave milliseconds off a
+      // contested mint; a relayed swap costs seconds to minutes and cannot be signed in
+      // advance because the returned steps depend on a live quote. Better to reject the
+      // combination than let one silently defeat the other.
+      if (cfg.execution.mode === 'race') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['mint', 'payment', 'mode'],
+          message:
+            'cross-chain payment cannot be used with execution.mode: race — a relayed ' +
+            'swap adds seconds and cannot win a contested mint. Use payment.mode: native.',
+        });
+      }
+      if (cfg.execution.presign) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['mint', 'payment', 'mode'],
+          message:
+            'cross-chain payment cannot be pre-signed — the transaction sequence depends ' +
+            'on a live swap quote. Set execution.presign: false.',
+        });
+      }
+      if (cfg.rpc.paymentEndpoints[cfg.mint.payment.chain] === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['rpc', 'paymentEndpoints'],
+          message:
+            `payment.chain is "${cfg.mint.payment.chain}" but rpc.paymentEndpoints has no ` +
+            `entry for it. The transactions execute on that chain, so it needs an RPC URL.`,
+        });
+      }
+    }
+
     if (cfg.execution.presign && cfg.execution.mode !== 'race') {
       ctx.addIssue({
         code: 'custom',

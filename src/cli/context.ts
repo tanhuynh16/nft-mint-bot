@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { config as loadDotenv } from 'dotenv';
 import { loadConfig } from '../config/loader.js';
 import { resolveChain, type ResolvedChain } from '../chains/registry.js';
+import { getChainProfileBySlug, supportedPaymentChains } from '../chains/profiles.js';
+import { NATIVE_TOKEN_ADDRESS } from '../config/schema.js';
+import { CrossChainDropProvider } from '../providers/crosschain-drop-provider.js';
 import { createSigner } from '../wallet/signer.js';
 import { RpcManager } from '../network/rpc-manager.js';
 import { GasEngine } from '../network/gas-engine.js';
@@ -25,11 +28,34 @@ export interface CliOverrides {
   mode?: string;
 }
 
+/**
+ * Everything needed to execute transactions on the payment chain.
+ *
+ * Present only under `payment.mode: cross-chain`, where the steps run on the payment
+ * chain rather than the drop's chain. Each field mirrors its mint-chain counterpart —
+ * the same classes, pointed at a different chain — so the executor needs no special
+ * cases and the journal, which keys on `${chainId}-${address}`, stays correct per chain.
+ */
+export interface PaymentContext {
+  slug: string;
+  resolved: ResolvedChain;
+  publicClient: PublicClient<Transport, Chain>;
+  wallet: ReturnType<typeof createSigner>['wallet'];
+  rpc: RpcManager;
+  gasEngine: GasEngine;
+  nonceManager: NonceManager;
+  broadcaster: Broadcaster;
+  monitor: TxMonitor;
+  journal: TxJournal;
+}
+
 export interface BotContext {
   runId: string;
   config: BotConfig;
   configPath: string;
   resolved: ResolvedChain;
+  /** Set only for cross-chain payment. */
+  payment?: PaymentContext;
   logger: Logger;
   account: Account;
   wallet: ReturnType<typeof createSigner>['wallet'];
@@ -88,11 +114,14 @@ export function createContext(
   const broadcaster = new Broadcaster(rpc, resolved, config.rpc.parallelBroadcast, logger);
   const monitor = new TxMonitor(publicClient, logger);
 
+  const payment = buildPaymentContext(config, account, runId, logger);
+
   return {
     runId,
     config,
     configPath: path,
     resolved,
+    ...(payment ? { payment } : {}),
     logger,
     account,
     wallet,
@@ -106,6 +135,89 @@ export function createContext(
     broadcaster,
     monitor,
     metrics: new Metrics(),
+  };
+}
+
+/**
+ * Builds the payment-chain execution context, or undefined under native payment.
+ *
+ * Native is the fast default and needs none of this: it executes on the drop's own
+ * chain using the mint-chain clients already built above.
+ */
+function buildPaymentContext(
+  config: BotConfig,
+  account: Account,
+  runId: string,
+  logger: Logger,
+): PaymentContext | undefined {
+  if (config.mint.payment.mode !== 'cross-chain') return undefined;
+
+  const { chain: slug, token } = config.mint.payment;
+  const profile = getChainProfileBySlug(slug);
+
+  if (!profile) {
+    throw new Error(
+      `Unknown payment chain "${slug}". Known chains: ${supportedPaymentChains().join(', ')}.`,
+    );
+  }
+
+  const endpoints = config.rpc.paymentEndpoints[slug];
+  if (!endpoints || endpoints.length === 0) {
+    throw new Error(`No rpc.paymentEndpoints entry for payment chain "${slug}".`);
+  }
+
+  logger.warn(
+    {
+      paymentChain: slug,
+      paymentToken: token.toLowerCase() === NATIVE_TOKEN_ADDRESS ? 'native' : token,
+    },
+    'cross-chain payment selected — a swap, bridge and relay add seconds to minutes; ' +
+      'use payment.mode: native for a competitive mint',
+  );
+
+  // A synthetic config pointed at the payment chain, so every existing class can be
+  // reused unchanged rather than growing a second multi-chain code path.
+  const paymentConfig: BotConfig = {
+    ...config,
+    network: {
+      ...config.network,
+      name: slug,
+      chainId: profile.chain.id,
+      orderingModel: profile.orderingModel,
+      feeModel: profile.feeModel,
+    },
+    rpc: {
+      ...config.rpc,
+      endpoints,
+      ...(profile.sequencerUrl ? { submitEndpoint: profile.sequencerUrl } : {}),
+    },
+  };
+
+  const resolved = resolveChain(paymentConfig);
+  const { wallet } = createSigner(paymentConfig, resolved);
+  const rpc = new RpcManager(paymentConfig, resolved, logger);
+  const publicClient = rpc.primary();
+
+  const journal = new TxJournal(
+    config.journal.dir,
+    profile.chain.id,
+    account.address,
+    runId,
+    logger,
+    config.journal.enabled,
+  );
+
+  return {
+    slug,
+    resolved,
+    publicClient,
+    wallet,
+    rpc,
+    gasEngine: new GasEngine(paymentConfig, profile.feeModel, logger),
+    nonceManager: new NonceManager(publicClient, account.address, journal, logger),
+    broadcaster: new Broadcaster(rpc, resolved, paymentConfig.rpc.parallelBroadcast, logger),
+    monitor: new TxMonitor(publicClient, logger),
+    journal,
   };
 }
 
@@ -124,6 +236,42 @@ export async function resolveProvider(
   const { config, drops, publicClient, account, logger, resolved } = ctx;
   const slug = config.mint.collectionSlug;
 
+  // Cross-chain payment routes through OpenSea's relay endpoint regardless of the
+  // drop's underlying contract type, so it short-circuits provider selection.
+  if (config.mint.payment.mode === 'cross-chain') {
+    const paymentChain = config.mint.payment.chain;
+
+    // The relay endpoint rejects a payment chain equal to the drop's chain
+    // ("Payment chain must differ from the drop chain for a cross-chain mint"), and it
+    // is right to: paying on the drop's own chain *is* native payment. Fall back rather
+    // than let the run die on an API error at the moment of the mint — the native path
+    // reaches the same result with one transaction and no relay.
+    const dropChain = await drops
+      .getDrop(slug)
+      .then((d) => d.chain)
+      .catch(() => undefined);
+
+    if (dropChain && dropChain.toLowerCase() === paymentChain.toLowerCase()) {
+      logger.warn(
+        { paymentChain, dropChain },
+        'payment chain equals the drop chain — using the direct native path instead, ' +
+          'which is what cross-chain payment on the same chain amounts to (and is faster)',
+      );
+    } else {
+      return new CrossChainDropProvider(
+        drops,
+        {
+          slug,
+          minter: account.address,
+          payer: account.address,
+          paymentChain,
+          paymentToken: config.mint.payment.token,
+        },
+        logger,
+      );
+    }
+  }
+
   let contractAddress = options.contractAddress;
   let dropType: string | undefined;
 
@@ -132,13 +280,19 @@ export async function resolveProvider(
     contractAddress = drop.contract_address;
     dropType = drop.drop_type;
 
+    // Under native payment the mint executes on the drop's own chain, so a mismatch
+    // means the config points somewhere the contract is not deployed. Stop rather than
+    // warn: continuing would build a transaction against the wrong chain.
     if (resolved.openseaChain && drop.chain !== resolved.openseaChain) {
-      logger.warn(
-        { apiChain: drop.chain, configChain: resolved.openseaChain },
-        'drop chain does not match the configured network',
+      throw new Error(
+        `Drop "${slug}" is deployed on "${drop.chain}" but the config network is ` +
+          `"${resolved.openseaChain}" (chain ${config.network.chainId}). ` +
+          `Point network at the drop's chain, or use payment.mode: cross-chain to pay ` +
+          `from another chain.`,
       );
     }
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Drop "')) throw error;
     logger.warn(
       { error: error instanceof Error ? error.message : String(error) },
       'could not read the drop from the OpenSea Drops API',

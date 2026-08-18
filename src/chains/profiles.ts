@@ -1,5 +1,5 @@
 import { defineChain, type Chain } from 'viem';
-import { mainnet, base, arbitrum, polygon } from 'viem/chains';
+import { mainnet, base, arbitrum, polygon, optimism } from 'viem/chains';
 import type { FeeModel, OrderingModel } from '../config/schema.js';
 
 /**
@@ -77,6 +77,13 @@ export const CHAIN_PROFILES: Record<number, ChainProfile> = {
     feeModel: 'orbit',
     openseaChain: 'arbitrum',
   },
+  [optimism.id]: {
+    // OP-stack, like Base: single sequencer ordering by arrival.
+    chain: optimism,
+    orderingModel: 'fcfs',
+    feeModel: 'eip1559',
+    openseaChain: 'optimism',
+  },
   [robinhood.id]: {
     chain: robinhood,
     orderingModel: 'fcfs',
@@ -95,6 +102,25 @@ export const CHAIN_PROFILES: Record<number, ChainProfile> = {
 
 export function getChainProfile(chainId: number): ChainProfile | undefined {
   return CHAIN_PROFILES[chainId];
+}
+
+/**
+ * Looks a chain up by its OpenSea slug ("base", "ethereum", …).
+ *
+ * The payment side of a cross-chain mint is identified by slug, not chain id, because
+ * that is what the OpenSea API speaks.
+ */
+export function getChainProfileBySlug(slug: string): ChainProfile | undefined {
+  const wanted = slug.toLowerCase();
+  return Object.values(CHAIN_PROFILES).find((p) => p.openseaChain === wanted);
+}
+
+/** OpenSea slugs the bot can execute payment transactions on. */
+export function supportedPaymentChains(): string[] {
+  return Object.values(CHAIN_PROFILES)
+    .map((p) => p.openseaChain)
+    .filter((slug): slug is string => Boolean(slug))
+    .sort();
 }
 
 export function knownChainIds(): number[] {

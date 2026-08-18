@@ -9,6 +9,8 @@ import type { Broadcaster } from './broadcaster.js';
 import type { TxMonitor } from './monitor.js';
 import { simulate } from './simulator.js';
 import { classifyError } from '../retry/classifier.js';
+import type { PlanExecutor } from './plan-executor.js';
+import type { MintPlan } from '../providers/mint-provider.js';
 import type { Metrics } from '../observability/metrics.js';
 import type { Logger } from '../observability/logger.js';
 
@@ -49,6 +51,13 @@ export interface OrchestratorDeps {
   logger: Logger;
   /** Pre-signed raw transaction, when the race path is armed. */
   presignedTx?: Hex;
+  /**
+   * Executes a multi-step plan on the payment chain. Present only under cross-chain
+   * payment; native payment keeps the single-transaction path below.
+   */
+  planExecutor?: PlanExecutor;
+  /** Read client for the payment chain, used for the balance preflight under cross-chain. */
+  paymentPublicClient?: PublicClient<Transport, Chain>;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -108,19 +117,40 @@ export class MintOrchestrator {
       );
     }
 
-    const balance = await publicClient.getBalance({ address: account.address });
+    // Under cross-chain payment the transactions execute on the payment chain, so that
+    // is where funds and gas are needed. Requiring a balance on the drop's chain would
+    // reject exactly the case this feature exists to serve: holding nothing there and
+    // paying from somewhere else.
+    // Keyed on paymentPublicClient, not the config: when the payment chain equals the
+    // drop's chain the run falls back to the native path, and the balance must then be
+    // checked on the drop's chain like any native mint.
+    const paymentClient = this.deps.paymentPublicClient;
+    const crossChain = Boolean(paymentClient);
+    const payment = config.mint.payment;
+    const balanceClient = paymentClient ?? publicClient;
+    const balanceChain =
+      crossChain && payment.mode === 'cross-chain' ? payment.chain : resolved.chain.name;
+
+    const balance = await balanceClient.getBalance({ address: account.address });
     logger.info(
       {
         address: account.address,
         chainId,
         chain: resolved.chain.name,
+        balanceChain,
         balance: formatEther(balance),
+        ...(crossChain ? { note: 'balance shown for the payment chain' } : {}),
       },
       'wallet ready',
     );
 
     if (balance === 0n) {
-      throw new Error(`Wallet ${account.address} has zero balance on ${resolved.chain.name}.`);
+      throw new Error(
+        `Wallet ${account.address} has zero native balance on ${balanceChain}` +
+          (crossChain
+            ? ' — gas there is required even when the mint price is paid in a token.'
+            : '.'),
+      );
     }
   }
 
@@ -266,11 +296,17 @@ export class MintOrchestrator {
       metrics,
       logger,
       presignedTx,
+      planExecutor,
     } = this.deps;
 
     // Race path: everything below was done before the window opened.
     if (presignedTx) {
       return this.broadcastPresigned(presignedTx);
+    }
+
+    // Cross-chain path: a sequence on the payment chain, not one call on this one.
+    if (planExecutor) {
+      return this.executePlan(planExecutor);
     }
 
     this.transition('BUILDING_TX');
@@ -326,6 +362,72 @@ export class MintOrchestrator {
     }
 
     return this.broadcastAndConfirm(rawTx, nonce);
+  }
+
+  /**
+   * Runs a cross-chain payment plan.
+   *
+   * The provider returns an ordered sequence on the payment chain; the executor runs it
+   * step by step. The final step only initiates the mint — the relay delivers it to the
+   * drop's chain afterwards, so a confirmed receipt here means "payment accepted", not
+   * "NFT in hand". The relay id is surfaced so delivery can be tracked.
+   */
+  private async executePlan(executor: PlanExecutor): Promise<MintOutcome> {
+    const { config, provider, metrics, logger } = this.deps;
+
+    this.transition('BUILDING_TX');
+
+    const buildPlan = (provider as { buildMintPlan?: (q: bigint) => Promise<MintPlan> })
+      .buildMintPlan;
+    if (typeof buildPlan !== 'function') {
+      throw new Error(`Provider "${provider.name}" cannot build a cross-chain mint plan.`);
+    }
+
+    const [plan] = await metrics.time<MintPlan>('build', () =>
+      buildPlan.call(provider, BigInt(config.mint.quantity)),
+    );
+
+    const dryRun = config.execution.mode === 'dry-run';
+    if (dryRun) {
+      logger.info(
+        {
+          steps: plan.transactions.map((tx, i) => ({
+            step: i + 1,
+            label: tx.label,
+            chain: tx.chain,
+            to: tx.to,
+            value: tx.value.toString(),
+          })),
+          relayRequestId: plan.relayRequestId,
+        },
+        'dry-run: cross-chain plan built, nothing will be broadcast',
+      );
+    }
+
+    this.transition('BROADCASTING');
+    const result = await executor.execute(plan, dryRun);
+
+    if (dryRun) {
+      this.transition('CONFIRMED');
+      return { state: 'CONFIRMED', attempts: this.attempts, metrics: metrics.summary() };
+    }
+
+    this.transition('CONFIRMED');
+    logger.info(
+      {
+        steps: result.steps,
+        finalTxHash: result.finalTxHash,
+        relayRequestId: result.relayRequestId,
+      },
+      'payment accepted — the relay now delivers the mint to the drop chain',
+    );
+
+    return {
+      state: 'CONFIRMED',
+      ...(result.finalTxHash ? { txHash: result.finalTxHash } : {}),
+      attempts: this.attempts,
+      metrics: metrics.summary(),
+    };
   }
 
   private async broadcastPresigned(rawTx: Hex): Promise<MintOutcome> {

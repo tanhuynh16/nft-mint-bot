@@ -7,6 +7,28 @@ export interface UnsignedTx {
   value: bigint;
 }
 
+/** One step of a multi-transaction plan, tagged with the chain it must run on. */
+export interface PlannedTx extends UnsignedTx {
+  /** OpenSea chain slug. Asserted against the configured payment chain before signing. */
+  chain: string;
+  /** Human label for logs, e.g. "approve" or "mint". */
+  label?: string;
+}
+
+/**
+ * An ordered sequence of transactions that together complete a mint.
+ *
+ * The native path produces exactly one step. A cross-chain payment produces one step
+ * for a native token, or an `approve` plus the bridge call for an ERC-20 — all on the
+ * payment chain, with the relay delivering to the drop's chain afterwards.
+ */
+export interface MintPlan {
+  transactions: PlannedTx[];
+  /** Relay identifiers, reported for manual tracking; OpenSea documents no status API. */
+  relayRequestId?: string;
+  requestId?: string;
+}
+
 export interface MintStage {
   uuid?: string;
   label?: string;

@@ -89,6 +89,57 @@ export async function doctorCommand(configPath: string): Promise<number> {
       : `unset — the eligibility endpoint will be unavailable (set ${config.opensea.bearerTokenEnv})`,
   });
 
+  // Cross-chain payment: validate the token and confirm the payment chain can pay gas.
+  // A typo in a token address should fail here, not as an opaque 400 during the mint.
+  if (config.mint.payment.mode === 'cross-chain' && ctx.payment) {
+    const { chain: paymentChain, token } = config.mint.payment;
+
+    try {
+      const paymentToken = await drops.getPaymentToken(paymentChain, token);
+      checks.push({
+        name: 'payment token',
+        ok: true,
+        detail: `${paymentToken.symbol ?? '?'} on ${paymentChain} (${token})`,
+      });
+    } catch (error) {
+      checks.push({
+        name: 'payment token',
+        ok: false,
+        detail: `${token} on ${paymentChain} — ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      });
+    }
+
+    const paymentHealth = await ctx.payment.rpc.probe();
+    checks.push({
+      name: 'payment chain rpc',
+      ok: paymentHealth.some((h) => h.ok),
+      detail: `${paymentChain} — ${paymentHealth.map((h) => `${h.latencyMs}ms`).join(', ')}`,
+    });
+
+    try {
+      // Gas on the payment chain is always its native token, whatever token pays the
+      // mint price. A wallet holding only USDC there cannot send the transaction.
+      const gasBalance = await ctx.payment.publicClient.getBalance({
+        address: account.address,
+      });
+      checks.push({
+        name: 'payment chain gas',
+        ok: gasBalance > 0n,
+        detail:
+          `${formatEther(gasBalance)} native on ${paymentChain}` +
+          (gasBalance === 0n ? ' — needed for gas even when paying in a token' : ''),
+      });
+    } catch (error) {
+      checks.push({
+        name: 'payment chain gas',
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   try {
     const drop = await drops.getDrop(config.mint.collectionSlug);
     checks.push({

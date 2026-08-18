@@ -16,6 +16,8 @@
     "doctor": "tsx src/cli/index.ts doctor",
     "preinspect": "node scripts/check-node.cjs",
     "inspect": "tsx src/cli/index.ts inspect",
+    "prepayments": "node scripts/check-node.cjs",
+    "payments": "tsx src/cli/index.ts payments",
     "predry-run": "node scripts/check-node.cjs",
     "dry-run": "tsx src/cli/index.ts dry-run",
     "premint": "node scripts/check-node.cjs",

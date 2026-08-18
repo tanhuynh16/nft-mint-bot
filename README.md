@@ -57,8 +57,9 @@ arguments from the bot's:
 ```bash
 nvm use                                                    # Node 20+, reads .nvmrc
 
-npm run doctor  -- --config config/robinhood-testnet.yaml  # environment + RTT audit
-npm run inspect -- --config config/robinhood-testnet.yaml  # what the Drops API knows
+npm run doctor   -- --config config/robinhood-testnet.yaml # environment + RTT audit
+npm run inspect  -- --config config/robinhood-testnet.yaml # what the Drops API knows
+npm run payments -- --config config/robinhood.yaml         # tokens you can pay with
 npm run dry-run -- --config config/robinhood-testnet.yaml  # build + simulate, no broadcast
 npm run mint    -- --config config/robinhood.yaml --quantity 2
 ```
@@ -69,6 +70,50 @@ contract, and you pass `--contract 0x...` to use the direct SeaDrop path instead
 
 The mint command is `mint`, not `start`, so that a bare `npm start` cannot fire a
 real mint by accident.
+
+## Paying with a token on another chain
+
+By default the bot pays natively on the chain the NFT contract is deployed to. That is
+one transaction, no swap and no bridge — always the fastest route, and what any
+competitive mint should use. No configuration needed.
+
+To spend a token you already hold elsewhere instead, opt in:
+
+```yaml
+mint:
+  payment:
+    mode: cross-chain
+    chain: base                                          # OpenSea chain slug
+    token: "0x0000000000000000000000000000000000000000"  # 0x0 = native token
+
+rpc:
+  paymentEndpoints:
+    base: ["https://mainnet.base.org"]                   # the steps execute here
+```
+
+Run `npm run payments` to list your balances across chains with their token addresses,
+rather than guessing.
+
+Two things worth knowing:
+
+- **This chooses the token for the mint price, not for gas.** Gas is still the native
+  token of the payment chain — pay with USDC on Base and you still need Base ETH.
+- **It is slower.** OpenSea routes cross-chain mints through Relay: a swap, a bridge and
+  a relay hop, adding seconds to minutes. The config refuses to combine it with
+  `execution.mode: race` or `presign`, because those exist to save milliseconds and the
+  two intentions contradict each other.
+
+An ERC-20 payment yields two steps — `approve` then the bridge call — executed in order,
+each awaiting its receipt. The `approve` is skipped when the on-chain allowance already
+covers the amount, so a re-run after a failure does not pay for it twice.
+
+Setting `chain` to the drop's own chain is the same thing as native payment; the bot
+detects this and takes the direct path rather than failing against the relay endpoint,
+which rejects it.
+
+A confirmed receipt means the **payment** was accepted. The relay then delivers the mint
+to the drop's chain, so the NFT arrives shortly after. The relay request id is logged for
+tracking.
 
 ## Execution modes
 
