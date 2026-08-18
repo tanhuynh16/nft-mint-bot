@@ -20,6 +20,10 @@ export interface JournalEvent {
    */
   rawTx?: string;
   error?: string;
+  /** 1-based step index within a multi-transaction plan, for audit of partial runs. */
+  step?: number;
+  /** Step label, e.g. "approve" or "mint". */
+  label?: string;
 }
 
 /**

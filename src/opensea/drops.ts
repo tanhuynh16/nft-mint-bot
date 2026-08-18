@@ -48,6 +48,67 @@ export const mintTransactionSchema = z.looseObject({
 });
 export type MintTransaction = z.infer<typeof mintTransactionSchema>;
 
+/**
+ * One step of a cross-chain mint. Every step executes on the payment chain — the
+ * relay handles delivery to the NFT's chain, which is why paying from Base mints a
+ * Robinhood NFT with a single signature on Base.
+ */
+export const swapTransactionSchema = z.looseObject({
+  chain: z.string(),
+  to: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  data: z.string().regex(/^0x[a-fA-F0-9]*$/),
+  /** Decimal string. `value_hex` carries the same amount as hex. */
+  value: z.union([z.string(), z.number()]).nullable().optional(),
+  value_hex: z.string().nullable().optional(),
+});
+export type SwapTransaction = z.infer<typeof swapTransactionSchema>;
+
+/** Response of POST /api/v2/drops/{slug}/cross_chain_mint. */
+export const crossChainMintSchema = z.looseObject({
+  transactions: z.array(swapTransactionSchema),
+  receipt_request: z
+    .looseObject({
+      relay_request_id: z.string().nullable().optional(),
+      request_id: z.string().nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+});
+export type CrossChainMint = z.infer<typeof crossChainMintSchema>;
+
+/** Response of GET /api/v2/chain/{chain}/payment_token/{address}. */
+export const paymentTokenSchema = z.looseObject({
+  address: z.string(),
+  chain: z.string(),
+  symbol: z.string().optional(),
+  name: z.string().optional(),
+  decimals: z.number().optional(),
+  usd_price: z.union([z.string(), z.number()]).nullable().optional(),
+});
+export type PaymentToken = z.infer<typeof paymentTokenSchema>;
+
+/** One row of GET /api/v2/account/{address}/tokens. */
+export const tokenBalanceSchema = z.looseObject({
+  address: z.string().optional(),
+  chain: z.string().optional(),
+  symbol: z.string().optional(),
+  name: z.string().optional(),
+  decimals: z.number().optional(),
+  /** Display units, already divided by 10^decimals — not raw/wei. */
+  quantity: z.union([z.string(), z.number()]).nullable().optional(),
+  usd_price: z.union([z.string(), z.number()]).nullable().optional(),
+  /** quantity * usd_price. */
+  usd_value: z.union([z.string(), z.number()]).nullable().optional(),
+  image_url: z.string().nullable().optional(),
+  opensea_url: z.string().nullable().optional(),
+});
+export type TokenBalance = z.infer<typeof tokenBalanceSchema>;
+
+export const tokenBalancesSchema = z.looseObject({
+  token_balances: z.array(tokenBalanceSchema).default([]),
+  next: z.string().nullable().optional(),
+});
+
 export const eligibilityStageSchema = z.looseObject({
   stage_uuid: z.string(),
   is_eligible: z.boolean(),
@@ -111,5 +172,53 @@ export class DropsApi {
       { method: 'POST', body: { minter, quantity } },
     );
     return mintTransactionSchema.parse(raw);
+  }
+
+  /**
+   * POST /api/v2/drops/{slug}/cross_chain_mint
+   *
+   * Returns an ordered sequence to run on the payment chain — typically one
+   * transaction for a native token, or an `approve` followed by the bridge call for an
+   * ERC-20. Delivery to the drop's chain is handled by the relay afterwards.
+   */
+  async buildCrossChainMint(
+    slug: string,
+    minter: string,
+    payer: string,
+    quantity: number,
+    payment: { chain: string; token_address: string },
+  ): Promise<CrossChainMint> {
+    const raw = await this.client.request<unknown>(
+      `/api/v2/drops/${encodeURIComponent(slug)}/cross_chain_mint`,
+      { method: 'POST', body: { minter, payer, quantity, payment } },
+    );
+    return crossChainMintSchema.parse(raw);
+  }
+
+  /**
+   * GET /api/v2/chain/{chain}/payment_token/{address}
+   *
+   * Used to validate a configured payment token before a run spends anything — a typo
+   * in a token address should fail in `doctor`, not mid-mint.
+   */
+  async getPaymentToken(chain: string, address: string): Promise<PaymentToken> {
+    const raw = await this.client.request<unknown>(
+      `/api/v2/chain/${encodeURIComponent(chain)}/payment_token/${encodeURIComponent(address)}`,
+    );
+    return paymentTokenSchema.parse(raw);
+  }
+
+  /**
+   * GET /api/v2/account/{address}/tokens
+   *
+   * The wallet's holdings across chains — the same data behind OpenSea's payment-method
+   * picker, so the operator can choose a chain/token pair from real balances.
+   */
+  async getAccountTokens(address: string, chains?: string[]): Promise<TokenBalance[]> {
+    const query = chains?.length ? `?chains=${encodeURIComponent(chains.join(','))}` : '';
+    const raw = await this.client.request<unknown>(
+      `/api/v2/account/${encodeURIComponent(address)}/tokens${query}`,
+    );
+    return tokenBalancesSchema.parse(raw).token_balances;
   }
 }

@@ -2,6 +2,7 @@ import { createContext, resolveProvider, type CliOverrides } from './context.js'
 import { MintOrchestrator } from '../tx/orchestrator.js';
 import { OpenSeaDropProvider } from '../providers/opensea-drop-provider.js';
 import { armTransaction, revalidateArmed, verifyLocalEncoding } from '../tx/presign.js';
+import { PlanExecutor } from '../tx/plan-executor.js';
 
 export interface StartOptions extends CliOverrides {
   contract?: string;
@@ -48,9 +49,12 @@ export async function startCommand(
   // Warm the connections before anything time-sensitive, so the mint window never pays
   // for a TLS handshake.
   await rpc.probe();
+  if (ctx.payment) await ctx.payment.rpc.probe();
 
   // Reconcile anything a previous run left pending before allocating a new nonce.
   const recovery = await nonceManager.initialize();
+  // The payment chain has its own nonce sequence and its own journal file.
+  if (ctx.payment) await ctx.payment.nonceManager.initialize();
   if (recovery.stillPending.length > 0) {
     logger.warn(
       { pending: recovery.stillPending },
@@ -70,6 +74,30 @@ export async function startCommand(
     presignedTx = await armFastPath(ctx, provider);
   }
 
+  // Under cross-chain payment the steps execute on the payment chain, so the executor
+  // is built from that context rather than the mint chain's clients.
+  // Gate on the resolved provider, not the config: resolveProvider falls back to the
+  // native path when the payment chain turns out to equal the drop's chain, and the
+  // executor must follow that decision rather than the original intent.
+  const usingCrossChain = provider.name === 'opensea-cross-chain';
+  const planExecutor =
+    ctx.payment && usingCrossChain
+    ? new PlanExecutor({
+        resolved: ctx.payment.resolved,
+        publicClient: ctx.payment.publicClient,
+        wallet: ctx.payment.wallet,
+        account,
+        nonceManager: ctx.payment.nonceManager,
+        gasEngine: ctx.payment.gasEngine,
+        broadcaster: ctx.payment.broadcaster,
+        monitor: ctx.payment.monitor,
+        metrics,
+        logger,
+        confirmationBlocks: config.execution.confirmationBlocks,
+        confirmationTimeoutMs: config.execution.confirmationTimeoutMs,
+      })
+    : undefined;
+
   const orchestrator = new MintOrchestrator({
     config,
     resolved,
@@ -84,10 +112,15 @@ export async function startCommand(
     metrics,
     logger,
     ...(presignedTx ? { presignedTx } : {}),
+    ...(planExecutor ? { planExecutor } : {}),
+    ...(ctx.payment && usingCrossChain
+      ? { paymentPublicClient: ctx.payment.publicClient }
+      : {}),
   });
 
   const outcome = await orchestrator.run();
   journal.close();
+  ctx.payment?.journal.close();
 
   logger.info(
     {

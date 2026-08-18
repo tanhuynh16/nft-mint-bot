@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import { startCommand } from './start.js';
 import { doctorCommand } from './doctor.js';
 import { inspectCommand } from './inspect.js';
+import { paymentsCommand } from './payments.js';
 
 const program = new Command();
 
@@ -55,6 +56,18 @@ program
     process.exitCode = await inspectCommand(options.config, {
       collection: options.collection,
     });
+  });
+
+program
+  .command('payments')
+  .description('List wallet token balances across chains, for choosing a payment method')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .option('--chains <slugs>', 'comma-separated chain slugs to filter by')
+  .action(async (options) => {
+    process.exitCode = await paymentsCommand(
+      options.config,
+      options.chains ? { chains: String(options.chains).split(',') } : {},
+    );
   });
 
 program
