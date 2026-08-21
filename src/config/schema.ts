@@ -169,6 +169,13 @@ const journalSchema = z.object({
   dir: z.string().default('.journal'),
 });
 
+const scheduleSchema = z.object({
+  /** Where the scheduled-job list lives. Must be writable by the service user. */
+  dir: z.string().default('.schedule'),
+  /** How long before a job's fire time the daemon wakes and hands off to the poller. */
+  leadTimeMs: z.number().int().positive().default(120_000),
+});
+
 export const configSchema = z
   .object({
     network: networkSchema,
@@ -179,6 +186,7 @@ export const configSchema = z
     wallet: walletSchema.prefault({}),
     opensea: openseaSchema.prefault({}),
     journal: journalSchema.prefault({}),
+    schedule: scheduleSchema.prefault({}),
   })
   .superRefine((cfg, ctx) => {
     if (cfg.mint.payment.mode === 'cross-chain') {

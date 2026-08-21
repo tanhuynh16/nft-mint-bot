@@ -1,5 +1,5 @@
 import { createContext, resolveProvider, type CliOverrides } from './context.js';
-import { MintOrchestrator } from '../tx/orchestrator.js';
+import { MintOrchestrator, type MintOutcome } from '../tx/orchestrator.js';
 import { OpenSeaDropProvider } from '../providers/opensea-drop-provider.js';
 import { armTransaction, revalidateArmed, verifyLocalEncoding } from '../tx/presign.js';
 import { PlanExecutor } from '../tx/plan-executor.js';
@@ -10,10 +10,23 @@ export interface StartOptions extends CliOverrides {
   local?: boolean;
 }
 
-export async function startCommand(
+export interface MintRunResult {
+  outcome: MintOutcome;
+  /** Block explorer base URL for the chain the mint ran on, when known. */
+  explorerUrl?: string;
+}
+
+/**
+ * Runs one mint and returns its outcome.
+ *
+ * Separated from the CLI wrapper so the scheduler daemon can drive exactly the same
+ * path without going through argument parsing or printing to stdout. Everything the
+ * operator sees at a terminal lives in startCommand below.
+ */
+export async function runMint(
   configPath: string,
   options: StartOptions = {},
-): Promise<number> {
+): Promise<MintRunResult> {
   const ctx = createContext(configPath, options);
   const {
     config,
@@ -121,6 +134,7 @@ export async function startCommand(
   const outcome = await orchestrator.run();
   journal.close();
   ctx.payment?.journal.close();
+  const explorerUrl = resolved.chain.blockExplorers?.default.url;
 
   logger.info(
     {
@@ -133,12 +147,21 @@ export async function startCommand(
     'run finished',
   );
 
+  return { outcome, ...(explorerUrl ? { explorerUrl } : {}) };
+}
+
+/** CLI wrapper: runs the mint, prints the result, maps it to an exit code. */
+export async function startCommand(
+  configPath: string,
+  options: StartOptions = {},
+): Promise<number> {
+  const { outcome, explorerUrl } = await runMint(configPath, options);
+
   if (outcome.txHash) {
-    const explorer = resolved.chain.blockExplorers?.default.url;
     // eslint-disable-next-line no-console
     console.log(
       `\n${outcome.state}: ${outcome.txHash}` +
-        (explorer ? `\n${explorer}/tx/${outcome.txHash}` : ''),
+        (explorerUrl ? `\n${explorerUrl}/tx/${outcome.txHash}` : ''),
     );
   }
 
