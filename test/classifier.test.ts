@@ -87,3 +87,27 @@ describe('classifyError — chain errors', () => {
     expect(result.reason).toMatch(/unclassified/);
   });
 });
+
+describe('classifyError — unsupported RPC method', () => {
+  it('stops on JSON-RPC -32601 instead of retrying forever', () => {
+    // A write-only sequencer rejects eth_chainId this way. Retrying cannot help: the
+    // endpoint will never implement the method.
+    const result = classifyError(
+      new Error('The method "eth_chainId" does not exist / is not available.'),
+    );
+    expect(result.class).toBe('config');
+    expect(result.retry).toBe(false);
+  });
+
+  it('also recognises the "method not found" phrasing', () => {
+    expect(classifyError(new Error('method not found')).retry).toBe(false);
+  });
+
+  it('recognises the raw error code', () => {
+    expect(classifyError(new Error('RPC error -32601')).class).toBe('config');
+  });
+
+  it('does not mistake an ordinary revert for an unsupported method', () => {
+    expect(classifyError(new Error('execution reverted')).class).toBe('deterministic');
+  });
+});

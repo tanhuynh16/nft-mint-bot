@@ -54,10 +54,20 @@ export function createSigner(
 ): SignerContext {
   const account = loadAccount(config, env);
 
+  // A read endpoint, deliberately NOT resolved.submitUrl.
+  //
+  // Signing looks local, but viem's signTransaction calls eth_chainId before it signs —
+  // unconditionally, even when `chain` is supplied. A dedicated sequencer serves only
+  // eth_sendRawTransaction and answers -32601 to everything else, so pointing the wallet
+  // client there makes every signature fail. This client never broadcasts; Broadcaster
+  // sends the raw transaction to submitUrl separately.
+  const signingUrl = resolved.readUrls[0] ?? resolved.submitUrl;
+
   const wallet = createWalletClient({
     account,
+    // Kept so viem still asserts the signed chain matches the configured one.
     chain: resolved.chain,
-    transport: http(resolved.submitUrl, {
+    transport: http(signingUrl, {
       timeout: config.rpc.timeoutMs,
       // Keep the connection warm so the mint window does not pay for a TLS handshake.
       fetchOptions: { keepalive: true },

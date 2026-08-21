@@ -121,6 +121,21 @@ export function classifyError(error: unknown, retryDelayMs = 100): Classificatio
     return { class: 'deterministic', retry: false, reason: 'nonce gap; reconcile required' };
   }
 
+  // JSON-RPC -32601. The endpoint does not implement the method and never will, so a
+  // retry cannot change the outcome. This is how a wallet client pointed at a write-only
+  // sequencer presents: every signature fails on eth_chainId, and without this case the
+  // bot loops SIGNING -> BUILDING_TX until maxRetries, burning the mint window.
+  if (/does not exist ?\/ ?is not available|method not found|-32601/i.test(message)) {
+    return {
+      class: 'config',
+      retry: false,
+      reason:
+        'the RPC endpoint does not implement a method the bot needs ' +
+        '(JSON-RPC -32601). A dedicated sequencer serves only eth_sendRawTransaction — ' +
+        'reads and signing must use a full node.',
+    };
+  }
+
   const supply = match(message, SUPPLY_PATTERNS);
   if (supply) return { class: 'supply', retry: false, reason: supply };
 
