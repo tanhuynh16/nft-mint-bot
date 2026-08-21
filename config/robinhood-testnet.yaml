@@ -14,7 +14,10 @@ rpc:
   timeoutMs: 10000
 
 mint:
-  collectionSlug: xcopunks
+  # No testnet twin exists for hood-penguins — its contract is not deployed on 46630
+  # (eth_getCode returns 0x). Replace with a slug that does exist on testnet to
+  # rehearse against; as-is the drop-chain guard will stop the run with a clear error.
+  collectionSlug: replace-me
   quantity: 1
   maxRetries: 20
   retryDelayMs: 100

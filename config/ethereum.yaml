@@ -12,8 +12,10 @@ network:
 
 rpc:
   endpoints:
-    - ${RPC_PRIMARY}
-    - ${RPC_SECONDARY}
+    # Same vars as paymentEndpoints below, so one override covers both roles. RPC_PRIMARY
+    # is not reused here: in a Robinhood-targeted .env it points at Robinhood's RPC, and
+    # the chain-id check would (correctly) reject it on an Ethereum config.
+    - ${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}
   parallelBroadcast: true
   timeoutMs: 10000
 
@@ -27,7 +29,9 @@ rpc:
     polygon:   ["${POLYGON_RPC:-https://polygon.drpc.org}"]
 
 mint:
-  collectionSlug: xcopunks
+  # A live Ethereum drop, so this example actually runs. The previous slug was a
+  # Robinhood collection, which the drop-chain guard rejects on an Ethereum config.
+  collectionSlug: doomscrollx
   quantity: 1
   maxRetries: 20
   retryDelayMs: 100
