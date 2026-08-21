@@ -32,7 +32,12 @@ rpc:
     robinhood: ["${RPC_PRIMARY}"]
 
 mint:
-  collectionSlug: xcopunks
+  # A cheap test collection on Robinhood mainnet (~0.00001 ETH each), kept as the
+  # committed default on purpose: `npm run mint` spends real funds, so the checked-in
+  # target should cost almost nothing if it is ever run by accident.
+  # Change the slug and quantity deliberately when minting something real, and re-read
+  # the price before you do — a stale price comment here once cost an unintended mint.
+  collectionSlug: testnftprofile
   quantity: 1
   maxRetries: 20
   retryDelayMs: 100
