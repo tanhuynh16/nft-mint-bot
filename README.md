@@ -134,6 +134,43 @@ A confirmed receipt means the **payment** was accepted. The relay then delivers 
 to the drop's chain, so the NFT arrives shortly after. The relay request id is logged for
 tracking.
 
+## Scheduling mints for later
+
+Drops open at whatever hour suits their creator, not you. `schedule` keeps a list of
+collections to mint at a future time and a daemon fires them unattended.
+
+```bash
+npm run schedule -- add <slug> --config config/robinhood.yaml --quantity 1
+npm run schedule -- list   --config config/robinhood.yaml
+npm run schedule -- edit   <id> --config config/robinhood.yaml --quantity 2
+npm run schedule -- remove <id> --config config/robinhood.yaml
+npm run schedule -- run    --config config/robinhood.yaml     # the daemon
+```
+
+**You never convert a timezone.** `add` reads the stage's start time from OpenSea, which
+publishes it as UTC, and `list` shows every time in UTC *and* your local zone so a
+misread is visible rather than latent:
+
+```
+ID      COLLECTION             QTY  STATUS    FIRES AT
+5ed7a7  hood-penguins            2  pending   2026-12-01 09:00:00Z  (2026-12-01, 16:00 Asia/Saigon)  in 101d
+```
+
+Use `--at 2026-09-01T14:00:00Z` only for a drop with no published stage yet.
+
+**`add` is where you authorise the spend.** It prints the price, quantity, total and
+target, then asks for confirmation before writing the job — because the daemon that
+fires it later will not ask. Each job stores a ceiling from that quote, so a repriced
+stage or a gas spike fails the job closed instead of spending more than you agreed to.
+
+The daemon **sleeps** while a job is distant and only wakes about two minutes before,
+handing off to the stage poller that tightens to 200ms near the open. That split is
+deliberate: polling OpenSea every 15 seconds for hours would exhaust the rate limit and
+buy nothing.
+
+For unattended operation on a server, see [deploy/README.md](deploy/README.md) — systemd
+unit, hardening, and the plain risks of putting a funded key on a rented box.
+
 ## Execution modes
 
 - `dry-run` — build and simulate, never broadcast.

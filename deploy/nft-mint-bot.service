@@ -1,0 +1,61 @@
+[Unit]
+Description=NFT mint bot scheduler
+Documentation=https://github.com/tanhuynh16/nft-mint-bot
+# Minting needs the network and a correct clock. A drop that opens at a precise second
+# is unwinnable on a drifted clock, so the timer must be up before this starts.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=mintbot
+Group=mintbot
+WorkingDirectory=/opt/nft-mint-bot
+
+# The private key and API key live here. Root-owned, chmod 600, readable only by
+# systemd when it starts the unit — never world-readable on disk.
+EnvironmentFile=/etc/nft-mint-bot/env
+
+ExecStart=/usr/bin/node dist/cli/index.js schedule run --config config/robinhood.yaml
+
+# Always come back. A missed reboot is a missed drop, which is the whole reason this
+# runs on a server rather than a laptop.
+Restart=always
+RestartSec=10
+
+# SIGTERM lets the runner finish or cleanly abandon the current step rather than dying
+# mid-transaction and leaving a job stuck in `running`. Give it room to land a receipt.
+KillSignal=SIGTERM
+TimeoutStopSec=120
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nft-mint-bot
+
+# --- Hardening -------------------------------------------------------------------
+# This process holds a funded hot wallet key in memory. Narrow what it can reach.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# ProtectSystem=strict makes everything read-only; these two are the only paths the
+# bot writes. Both must survive restarts: the journal is how an interrupted broadcast
+# is recovered, the schedule is the job list itself.
+ReadWritePaths=/opt/nft-mint-bot/.journal /opt/nft-mint-bot/.schedule
+
+[Install]
+WantedBy=multi-user.target

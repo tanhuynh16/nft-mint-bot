@@ -30,6 +30,12 @@ export interface CliOverrides {
   quantity?: number;
   gas?: string;
   mode?: string;
+  /**
+   * Target a different collection than the config names. This is what lets the
+   * scheduler run many jobs off one base config: the config supplies network, wallet
+   * and gas policy, each job supplies its own slug and quantity.
+   */
+  collectionSlug?: string;
 }
 
 /**
@@ -93,6 +99,7 @@ export function createContext(
 
   const { config, path } = loadConfig(configPath);
 
+  if (overrides.collectionSlug) config.mint.collectionSlug = overrides.collectionSlug;
   if (overrides.quantity !== undefined) config.mint.quantity = overrides.quantity;
   if (overrides.gas) config.gas.strategy = overrides.gas as BotConfig['gas']['strategy'];
   if (overrides.mode) config.execution.mode = overrides.mode as BotConfig['execution']['mode'];

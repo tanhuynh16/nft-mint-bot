@@ -6,6 +6,13 @@ import { startCommand } from './start.js';
 import { doctorCommand } from './doctor.js';
 import { inspectCommand } from './inspect.js';
 import { paymentsCommand } from './payments.js';
+import {
+  scheduleAddCommand,
+  scheduleEditCommand,
+  scheduleListCommand,
+  scheduleRemoveCommand,
+  scheduleRunCommand,
+} from './schedule.js';
 
 const program = new Command();
 
@@ -68,6 +75,68 @@ program
       options.config,
       options.chains ? { chains: String(options.chains).split(',') } : {},
     );
+  });
+
+const schedule = program
+  .command('schedule')
+  .description('Manage the list of NFTs queued to mint at a future time');
+
+schedule
+  .command('add <slug>')
+  .description('Queue a collection to mint when its stage opens')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .option('-q, --quantity <n>', 'how many to mint', (v) => Number.parseInt(v, 10))
+  .option('--at <iso>', 'explicit UTC time, e.g. 2026-09-01T14:00:00Z (default: the drop\'s stage)')
+  .option('-y, --yes', 'skip the confirmation prompt')
+  .action(async (slug, options) => {
+    process.exitCode = await scheduleAddCommand(slug, {
+      config: options.config,
+      ...(options.quantity !== undefined ? { quantity: options.quantity } : {}),
+      ...(options.at ? { at: options.at } : {}),
+      ...(options.yes ? { yes: true } : {}),
+    });
+  });
+
+schedule
+  .command('list')
+  .description('Show queued mints, with times in UTC and your local zone')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .option('--all', 'include finished, failed and cancelled jobs')
+  .action((options) => {
+    process.exitCode = scheduleListCommand(options.config, Boolean(options.all));
+  });
+
+schedule
+  .command('edit <id>')
+  .description('Change a queued mint')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .option('-q, --quantity <n>', 'new quantity', (v) => Number.parseInt(v, 10))
+  .option('--at <iso>', 'new explicit UTC time')
+  .option('--slug <slug>', 'target a different collection')
+  .action(async (id, options) => {
+    process.exitCode = await scheduleEditCommand(id, {
+      config: options.config,
+      ...(options.quantity !== undefined ? { quantity: options.quantity } : {}),
+      ...(options.at ? { at: options.at } : {}),
+      ...(options.slug ? { slug: options.slug } : {}),
+    });
+  });
+
+schedule
+  .command('remove <id>')
+  .description('Drop a queued mint')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .action((id, options) => {
+    process.exitCode = scheduleRemoveCommand(id, options.config);
+  });
+
+schedule
+  .command('run')
+  .description('Run the scheduler daemon (this is what systemd starts on the VPS)')
+  .requiredOption('-c, --config <path>', 'path to the YAML config')
+  .option('--once', 'make a single scheduling decision and exit')
+  .action(async (options) => {
+    process.exitCode = await scheduleRunCommand(options.config, Boolean(options.once));
   });
 
 program

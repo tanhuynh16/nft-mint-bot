@@ -18,6 +18,8 @@
     "inspect": "tsx src/cli/index.ts inspect",
     "prepayments": "node scripts/check-node.cjs",
     "payments": "tsx src/cli/index.ts payments",
+    "preschedule": "node scripts/check-node.cjs",
+    "schedule": "tsx src/cli/index.ts schedule",
     "predry-run": "node scripts/check-node.cjs",
     "dry-run": "tsx src/cli/index.ts dry-run",
     "premint": "node scripts/check-node.cjs",
