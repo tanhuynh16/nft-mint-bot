@@ -95,12 +95,14 @@ schedule
   .requiredOption('-c, --config <path>', 'path to the YAML config')
   .option('-q, --quantity <n>', 'how many to mint', (v) => Number.parseInt(v, 10))
   .option('--at <iso>', 'explicit UTC time, e.g. 2026-09-01T14:00:00Z (default: the drop\'s stage)')
+  .option('--stage <label>', 'target a named stage (default: the public sale)')
   .option('-y, --yes', 'skip the confirmation prompt')
   .action(async (slug, options) => {
     process.exitCode = await scheduleAddCommand(slug, {
       config: options.config,
       ...(options.quantity !== undefined ? { quantity: options.quantity } : {}),
       ...(options.at ? { at: options.at } : {}),
+      ...(options.stage ? { stage: options.stage } : {}),
       ...(options.yes ? { yes: true } : {}),
     });
   });
@@ -121,12 +123,14 @@ schedule
   .option('-q, --quantity <n>', 'new quantity', (v) => Number.parseInt(v, 10))
   .option('--at <iso>', 'new explicit UTC time')
   .option('--slug <slug>', 'target a different collection')
+  .option('--stage <label>', 'target a named stage')
   .action(async (id, options) => {
     process.exitCode = await scheduleEditCommand(id, {
       config: options.config,
       ...(options.quantity !== undefined ? { quantity: options.quantity } : {}),
       ...(options.at ? { at: options.at } : {}),
       ...(options.slug ? { slug: options.slug } : {}),
+      ...(options.stage ? { stage: options.stage } : {}),
     });
   });
 

@@ -28,7 +28,14 @@ function makeDrops(startTime = iso(3_600_000)) {
       collection_slug: 'testnftprofile',
       contract_address: '0x2db811758b6923d70fa7643ae83589974f29795d',
       chain: 'robinhood',
-      stages: [],
+      stages: [
+        {
+          label: 'Public',
+          stage_type: 'public_sale',
+          start_time: startTime,
+          price: '10000000000000',
+        },
+      ],
       active_stage: null,
       next_stage: { label: 'Public', start_time: startTime, price: '10000000000000' },
     }),

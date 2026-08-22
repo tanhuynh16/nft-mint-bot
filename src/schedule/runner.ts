@@ -1,5 +1,6 @@
 import { runMint } from '../cli/start.js';
 import { resolveSchedule } from './time.js';
+import { stageAfter } from './stages.js';
 import { isTerminal, type ScheduledJob, type ScheduleStore } from './store.js';
 import type { DropsApi } from '../opensea/drops.js';
 import type { Logger } from '../observability/logger.js';
@@ -141,9 +142,82 @@ export class ScheduleRunner {
     this.logger.info('scheduler stopped');
   }
 
+  /** Recognises "this wallet is not on the list" as distinct from a hard failure. */
+  private looksIneligible(error?: string): boolean {
+    if (!error) return false;
+    return /not eligible|eligibility|allowlist|allow list|invalidproof|precondition|422/i.test(
+      error,
+    );
+  }
+
+  /**
+   * Re-arms a rejected job against the next stage that has not closed.
+   *
+   * Bounded on both sides: it stops at the last stage, and it refuses to advance into a
+   * stage that costs more than the ceiling authorised at `schedule add` time. Falling
+   * forward into a pricier stage would spend money the operator never agreed to.
+   */
+  private async advanceStage(job: ScheduledJob, previousError?: string): Promise<boolean> {
+    try {
+      const drop = await this.drops.getDrop(job.slug);
+      const next = stageAfter(drop, job.stageLabel ?? '', this.now());
+
+      if (!next) {
+        this.logger.info(
+          { jobId: job.id, stage: job.stageLabel },
+          'wallet not eligible and no later stage remains',
+        );
+        return false;
+      }
+
+      const cost = (next.pricePerToken ?? 0n) * BigInt(job.quantity);
+      if (cost > BigInt(job.maxSpendWei)) {
+        this.store.update(job.id, {
+          status: 'failed',
+          error:
+            `not eligible for "${job.stageLabel}", and the next stage "${next.label}" ` +
+            `costs ${cost} wei which exceeds the authorised ${job.maxSpendWei}. ` +
+            `Re-add the job to authorise the higher amount.`,
+        });
+        this.logger.warn(
+          { jobId: job.id, nextStage: next.label, cost: cost.toString() },
+          'next stage exceeds the authorised spend; failing closed',
+        );
+        return true;
+      }
+
+      const fireAt = (next.startTime ?? new Date(this.now())).toISOString();
+      this.store.update(job.id, {
+        status: 'pending',
+        stageLabel: next.label,
+        stageType: next.type,
+        resolvedAt: fireAt,
+        error: `not eligible for "${job.stageLabel}"; advanced to "${next.label}"`,
+      });
+
+      this.logger.info(
+        { jobId: job.id, from: job.stageLabel, to: next.label, fireAt, previousError },
+        'wallet not eligible; job advanced to the next stage',
+      );
+      return true;
+    } catch (error) {
+      this.logger.warn(
+        { jobId: job.id, error: error instanceof Error ? error.message : String(error) },
+        'could not advance to the next stage',
+      );
+      return false;
+    }
+  }
+
   private async reresolve(job: ScheduledJob): Promise<void> {
     try {
-      const resolved = await resolveSchedule(this.drops, job.slug, job.when);
+      const resolved = await resolveSchedule(
+        this.drops,
+        job.slug,
+        job.when,
+        job.stageLabel,
+        this.now(),
+      );
       if (resolved.fireAt !== job.resolvedAt) {
         this.logger.info(
           { jobId: job.id, from: job.resolvedAt, to: resolved.fireAt },
@@ -174,6 +248,14 @@ export class ScheduleRunner {
       });
 
       const succeeded = outcome.state === 'CONFIRMED' || outcome.state === 'PENDING';
+
+      if (!succeeded && this.looksIneligible(outcome.error)) {
+        // A gated stage rejecting this wallet is not the end of the drop — the public
+        // sale is usually hours later. Advance rather than marking the job failed, which
+        // would leave the drop unminted for exactly the reason the scheduler exists.
+        if (await this.advanceStage(job, outcome.error)) return;
+      }
+
       this.store.update(job.id, {
         status: succeeded ? 'done' : 'failed',
         ...(outcome.txHash ? { txHash: outcome.txHash } : {}),

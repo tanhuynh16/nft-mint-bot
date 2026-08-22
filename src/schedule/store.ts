@@ -48,6 +48,9 @@ export const scheduledJobSchema = z.object({
   when: jobWhenSchema,
   /** What `auto` last resolved to, or the explicit time. UTC ISO. */
   resolvedAt: z.string().optional(),
+  /** Which stage this job targets. Needed to advance past one that rejects the wallet. */
+  stageLabel: z.string().optional(),
+  stageType: z.string().optional(),
   /**
    * Ceiling authorised when the job was added. If the cost at fire time exceeds this —
    * a repriced stage, a gas spike — the job fails closed rather than spending more than

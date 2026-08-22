@@ -19,6 +19,8 @@ export interface AddOptions {
   quantity?: number;
   at?: string;
   yes?: boolean;
+  /** Target a named stage instead of the public sale. */
+  stage?: string;
 }
 
 /**
@@ -40,7 +42,7 @@ export async function scheduleAddCommand(
 
   let resolved;
   try {
-    resolved = await resolveSchedule(ctx.drops, slug, when);
+    resolved = await resolveSchedule(ctx.drops, slug, when, options.stage);
   } catch (error) {
     log(`Cannot schedule: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
@@ -64,9 +66,15 @@ export async function scheduleAddCommand(
   log(`  quantity   : ${quantity}`);
   log(`  price each : ${formatEther(price)} ETH`);
   log(`  mint cost  : ${formatEther(mintCost)} ETH  (+ gas, capped at ${formatEther(ceiling)})`);
-  log(`  stage      : ${resolved.stage ?? 'unknown'}`);
+  log(`  stage      : ${resolved.stage ?? 'unknown'}${resolved.stageType ? ` (${resolved.stageType})` : ''}`);
   log(`  fires at   : ${formatBoth(resolved.fireAt)}  ${describeGap(resolved.fireAt)}`);
   if (resolved.activeNow) log(`               (stage is already open — this fires immediately)`);
+  if (resolved.requiresEligibility) {
+    log();
+    log(`  NOTE: "${resolved.stage}" is an allowlist/signed stage. It will reject this`);
+    log(`        wallet unless it is on the list. If it does, the job advances to the`);
+    log(`        next stage rather than giving up on the drop.`);
+  }
   log();
 
   if (!options.yes) {
@@ -84,6 +92,8 @@ export async function scheduleAddCommand(
     when,
     resolvedAt: resolved.fireAt,
     maxSpendWei: ceiling.toString(),
+    ...(resolved.stage ? { stageLabel: resolved.stage } : {}),
+    ...(resolved.stageType ? { stageType: resolved.stageType } : {}),
   });
 
   log(`Scheduled as ${job.id}.`);
@@ -111,6 +121,7 @@ export function scheduleListCommand(configPath: string, all = false): number {
       `${job.id.padEnd(8)}${job.slug.slice(0, 21).padEnd(22)}${String(job.quantity).padStart(4)}  ` +
         `${job.status.padEnd(10)}${when}`,
     );
+    if (job.stageLabel) log(`${' '.repeat(8)}stage ${job.stageLabel}${job.stageType ? ` (${job.stageType})` : ''}`);
     if (job.txHash) log(`${' '.repeat(8)}tx ${job.txHash}`);
     if (job.error) log(`${' '.repeat(8)}! ${job.error.slice(0, 90)}`);
   }
@@ -125,6 +136,7 @@ export interface EditOptions {
   quantity?: number;
   at?: string;
   slug?: string;
+  stage?: string;
 }
 
 export async function scheduleEditCommand(id: string, options: EditOptions): Promise<number> {
@@ -156,8 +168,10 @@ export async function scheduleEditCommand(id: string, options: EditOptions): Pro
   const slug = patch.slug ?? job.slug;
   const when = patch.when ?? job.when;
   try {
-    const resolved = await resolveSchedule(ctx.drops, slug, when);
+    const resolved = await resolveSchedule(ctx.drops, slug, when, options.stage ?? job.stageLabel);
     patch.resolvedAt = resolved.fireAt;
+    if (resolved.stage) patch.stageLabel = resolved.stage;
+    if (resolved.stageType) patch.stageType = resolved.stageType;
     const price = resolved.pricePerToken ?? 0n;
     patch.maxSpendWei = (price * BigInt(patch.quantity ?? job.quantity) + GAS_MARGIN_WEI).toString();
   } catch (error) {
