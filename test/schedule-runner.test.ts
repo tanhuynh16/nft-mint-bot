@@ -198,6 +198,88 @@ describe('restart reconciliation', () => {
   });
 });
 
+describe('closed stages', () => {
+  /** A drop whose targeted stage has already ended, plus one still open. */
+  function dropWithEndedStage() {
+    return {
+      getDrop: vi.fn().mockResolvedValue({
+        collection_slug: 'meozz',
+        contract_address: '0xaaa',
+        chain: 'robinhood',
+        stages: [
+          {
+            label: 'Team',
+            stage_type: 'signed_presale',
+            price: '0',
+            start_time: iso(-6 * 3_600_000),
+            end_time: iso(-60_000),
+          },
+          {
+            label: 'WhiteList',
+            stage_type: 'signed_presale',
+            price: '0',
+            start_time: iso(-30_000),
+            end_time: iso(30 * 24 * 3_600_000),
+          },
+        ],
+        active_stage: null,
+        next_stage: null,
+      }),
+    } as unknown as DropsApi;
+  }
+
+  it('fails a job whose stage closed while the daemon was down', async () => {
+    // The real case: the service crash-looped for hours, and by the time it recovered
+    // the Team stage had ended. Building a transaction against it cannot succeed.
+    const job = store.add({ ...JOB, slug: 'meozz', stageLabel: 'Team', resolvedAt: iso(-3_600_000) });
+    const { runner, mint } = makeRunner({ drops: dropWithEndedStage() });
+
+    const result = await runner.tick();
+
+    expect(result.action).toBe('skipped');
+    expect(mint).not.toHaveBeenCalled();
+    const after = store.get(job.id)!;
+    expect(after.status).toBe('failed');
+    expect(after.error).toMatch(/closed/i);
+  });
+
+  it('still fires a job whose stage is open', async () => {
+    const job = store.add({
+      ...JOB,
+      slug: 'meozz',
+      stageLabel: 'WhiteList',
+      resolvedAt: iso(-30_000),
+    });
+    const { runner, mint } = makeRunner({ drops: dropWithEndedStage() });
+
+    const result = await runner.tick();
+
+    expect(result.action).toBe('fired');
+    expect(mint).toHaveBeenCalled();
+    expect(store.get(job.id)!.status).toBe('done');
+  });
+
+  it('fires a job with no recorded stage rather than skipping it', async () => {
+    // Jobs added before stages were tracked have no stageLabel. Skipping those would
+    // silently drop a mintable job — worse than a wasted attempt.
+    store.add({ ...JOB, resolvedAt: iso(0) });
+    const { runner, mint } = makeRunner({ drops: dropWithEndedStage() });
+
+    expect((await runner.tick()).action).toBe('fired');
+    expect(mint).toHaveBeenCalled();
+  });
+
+  it('fires when the drop cannot be read, rather than assuming the worst', async () => {
+    store.add({ ...JOB, stageLabel: 'WhiteList', resolvedAt: iso(0) });
+    const { runner, mint } = makeRunner({
+      drops: { getDrop: vi.fn().mockRejectedValue(new Error('429')) } as unknown as DropsApi,
+    });
+
+    expect((await runner.tick()).action).toBe('fired');
+    expect(mint).toHaveBeenCalled();
+  });
+});
+
 describe('moved stage times', () => {
   it('picks up a stage that moved later', async () => {
     const job = store.add({ ...JOB, resolvedAt: iso(6 * 3_600_000) });
