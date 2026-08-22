@@ -84,13 +84,39 @@ describe('rate-limit guard', () => {
     expect(sleep).toHaveBeenCalled();
   });
 
-  it('caps a single sleep at the re-resolve interval, so moved stages are noticed', async () => {
+  it('never sleeps longer than maxNapMs, however distant the job', async () => {
+    // The regression: tick() used to sleep up to reresolveIntervalMs (15 minutes) in one
+    // go, so a job added meanwhile went unseen for that long. One mint fired 6m48s late
+    // and another had its stage close before the scheduler ever reached it.
     store.add({ ...JOB, resolvedAt: iso(30 * 24 * 3_600_000) });
-    const { runner, sleep } = makeRunner({ reresolveIntervalMs: 900_000 });
+    const { runner, sleep } = makeRunner({ reresolveIntervalMs: 900_000, maxNapMs: 60_000 });
 
     await runner.tick();
 
-    expect(sleep.mock.calls[0]![0]).toBeLessThanOrEqual(900_000);
+    expect(sleep.mock.calls[0]![0]).toBeLessThanOrEqual(60_000);
+    expect(sleep.mock.calls[0]![0]).not.toBe(900_000);
+  });
+
+  it('re-reads the queue each tick, so a job added while waiting is picked up', async () => {
+    store.add({ ...JOB, slug: 'distant', resolvedAt: iso(30 * 24 * 3_600_000) });
+    const { runner, mint } = makeRunner({ maxNapMs: 60_000 });
+
+    await runner.tick();                       // naps on the distant job
+    store.add({ ...JOB, slug: 'urgent', resolvedAt: iso(1_000) });  // added meanwhile
+    const result = await runner.tick();
+
+    expect(result.action).toBe('fired');
+    expect(mint.mock.calls[0]![1].collectionSlug).toBe('urgent');
+  });
+
+  it('still sleeps the exact remaining time inside the lead window', async () => {
+    // The cap governs idle waiting only. Firing accuracy must be untouched.
+    store.add({ ...JOB, resolvedAt: iso(45_000) });
+    const { runner, sleep } = makeRunner({ maxNapMs: 60_000 });
+
+    await runner.tick();
+
+    expect(sleep).toHaveBeenCalledWith(45_000);
   });
 
   it('fires once the job is inside the lead time', async () => {
@@ -277,6 +303,38 @@ describe('closed stages', () => {
 
     expect((await runner.tick()).action).toBe('fired');
     expect(mint).toHaveBeenCalled();
+  });
+});
+
+describe('re-resolve cadence', () => {
+  it('does not re-check a stage more often than the interval, despite frequent naps', async () => {
+    // Waking 15x more often must not multiply API calls: re-resolution runs on its own
+    // clock rather than being tied to how long the daemon slept.
+    store.add({ ...JOB, resolvedAt: iso(30 * 24 * 3_600_000) });
+    const drops = makeDrops();
+    const { runner } = makeRunner({ drops, maxNapMs: 60_000, reresolveIntervalMs: 900_000 });
+
+    for (let i = 0; i < 5; i += 1) await runner.tick();
+
+    expect((drops.getDrop as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
+  });
+
+  it('re-checks once the interval has elapsed', async () => {
+    store.add({ ...JOB, resolvedAt: iso(30 * 24 * 3_600_000) });
+    const drops = makeDrops();
+    let clock = NOW;
+    const { runner } = makeRunner({
+      drops,
+      maxNapMs: 60_000,
+      reresolveIntervalMs: 900_000,
+      now: () => clock,
+    });
+
+    await runner.tick();
+    clock += 900_001;
+    await runner.tick();
+
+    expect((drops.getDrop as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
   });
 });
 

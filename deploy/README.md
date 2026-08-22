@@ -219,6 +219,10 @@ sudo chown -R mintbot:mintbot /opt/nft-mint-bot
 
 ## Operating notes
 
+- **Timing.** A job added while the daemon waits is noticed within a minute, or at once
+  if the schedule-file watcher catches the write. Jobs sharing a fire time run
+  sequentially, a few seconds apart — one wallet means one nonce sequence, so they cannot
+  safely overlap.
 - **Funding.** The bot stops at its affordability guard rather than sending a doomed
   transaction, so an underfunded wallet means a silently missed drop. Check the balance
   against what `schedule list` says is queued.

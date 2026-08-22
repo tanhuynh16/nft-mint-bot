@@ -1,3 +1,5 @@
+import { watch, type FSWatcher } from 'node:fs';
+import { dirname } from 'node:path';
 import { runMint } from '../cli/start.js';
 import { resolveSchedule } from './time.js';
 import { openStages, stageAfter } from './stages.js';
@@ -16,6 +18,11 @@ export interface RunnerOptions {
   leadTimeMs?: number;
   /** Re-check `auto` times no more often than this while a job is distant. */
   reresolveIntervalMs?: number;
+  /**
+   * Longest single sleep. Bounds how stale the daemon's view of the queue can get: a
+   * job added from the CLI while it waits is picked up within this window.
+   */
+  maxNapMs?: number;
   /** Injected for tests. */
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -45,11 +52,17 @@ export class ScheduleRunner {
   private readonly logger: Logger;
   private readonly leadTimeMs: number;
   private readonly reresolveIntervalMs: number;
+  private readonly maxNapMs: number;
+  /** When each job's stage time was last checked with OpenSea. */
+  private readonly lastResolved = new Map<string, number>();
   private readonly now: () => number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly mint: typeof runMint;
 
   private stopping = false;
+  private watcher: FSWatcher | undefined;
+  /** Resolves the current nap early when the schedule file changes. */
+  private wake: (() => void) | undefined;
 
   constructor(options: RunnerOptions) {
     this.store = options.store;
@@ -57,6 +70,7 @@ export class ScheduleRunner {
     this.logger = options.logger;
     this.leadTimeMs = options.leadTimeMs ?? 120_000;
     this.reresolveIntervalMs = options.reresolveIntervalMs ?? 15 * 60_000;
+    this.maxNapMs = options.maxNapMs ?? 60_000;
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? defaultSleep;
     this.mint = options.mint ?? runMint;
@@ -64,6 +78,65 @@ export class ScheduleRunner {
 
   stop(): void {
     this.stopping = true;
+    this.wake?.();
+    this.closeWatcher();
+  }
+
+  /**
+   * Sleeps, but returns early if the schedule file changes.
+   *
+   * The cap on nap length already guarantees a new job is seen within a minute; this
+   * only removes the wait when the change is observable immediately.
+   */
+  private async nap(ms: number): Promise<void> {
+    let interrupted: (() => void) | undefined;
+    const early = new Promise<void>((resolve) => {
+      interrupted = resolve;
+      this.wake = resolve;
+    });
+
+    try {
+      await Promise.race([this.sleep(ms), early]);
+    } finally {
+      if (this.wake === interrupted) this.wake = undefined;
+    }
+  }
+
+  /**
+   * Watches the schedule file so a CLI edit wakes the daemon at once.
+   *
+   * Strictly an optimisation, and deliberately unable to bring the process down: the
+   * store writes via temp-file rename, and rename events are exactly what watchers drop
+   * on some platforms and filesystems. The nap cap remains the guarantee; this only
+   * removes latency when it happens to work.
+   */
+  private startWatcher(): void {
+    try {
+      // Watch the directory, not the file: an atomic rename replaces the inode, and a
+      // file-level watch would be left holding the old one.
+      this.watcher = watch(dirname(this.store.path), { persistent: false }, () => {
+        this.wake?.();
+      });
+      this.watcher.on('error', (error) => {
+        this.logger.debug({ error: String(error) }, 'schedule watcher error; ignoring');
+      });
+      this.watcher.unref?.();
+      this.logger.debug({ path: this.store.path }, 'watching the schedule file');
+    } catch (error) {
+      this.logger.debug(
+        { error: error instanceof Error ? error.message : String(error) },
+        'could not watch the schedule file; falling back to polling',
+      );
+    }
+  }
+
+  private closeWatcher(): void {
+    try {
+      this.watcher?.close();
+    } catch {
+      /* already closed */
+    }
+    this.watcher = undefined;
   }
 
   /**
@@ -117,12 +190,17 @@ export class ScheduleRunner {
     const untilFire = fireAt - this.now();
 
     if (untilFire > this.leadTimeMs) {
-      // Distant: sleep, do not poll. Wake early enough to re-resolve a moved stage.
-      const nap = Math.min(untilFire - this.leadTimeMs, this.reresolveIntervalMs);
-      await this.sleep(nap);
-      if (!this.stopping && untilFire - nap > this.leadTimeMs) {
-        await this.reresolve(job);
-      }
+      // Distant: sleep, do not poll. The cap is what bounds how stale this view of the
+      // queue can get — sleeping all the way to the job would blind the daemon to work
+      // added meanwhile, which once delayed a mint by nearly seven minutes and let a
+      // stage close before its job was ever reached.
+      const nap = Math.min(untilFire - this.leadTimeMs, this.maxNapMs);
+
+      // Re-resolution runs on its own clock, not the sleep length. Conflating the two
+      // is what made the nap fifteen minutes long in the first place.
+      if (this.shouldReresolve(job.id)) await this.reresolve(job);
+
+      await this.nap(nap);
       return { action: 'slept', jobId: job.id, detail: `${Math.round(nap / 1000)}s` };
     }
 
@@ -145,9 +223,14 @@ export class ScheduleRunner {
   /** Runs until stopped. */
   async run(): Promise<void> {
     this.reconcile();
-    while (!this.stopping) {
-      const result = await this.tick();
-      if (result.action === 'idle') await this.sleep(30_000);
+    this.startWatcher();
+    try {
+      while (!this.stopping) {
+        const result = await this.tick();
+        if (result.action === 'idle') await this.nap(Math.min(30_000, this.maxNapMs));
+      }
+    } finally {
+      this.closeWatcher();
     }
     this.logger.info('scheduler stopped');
   }
@@ -249,7 +332,14 @@ export class ScheduleRunner {
     }
   }
 
+  /** True when this job's stage time has not been checked within the interval. */
+  private shouldReresolve(jobId: string): boolean {
+    const last = this.lastResolved.get(jobId);
+    return last === undefined || this.now() - last >= this.reresolveIntervalMs;
+  }
+
   private async reresolve(job: ScheduledJob): Promise<void> {
+    this.lastResolved.set(job.id, this.now());
     try {
       const resolved = await resolveSchedule(
         this.drops,
