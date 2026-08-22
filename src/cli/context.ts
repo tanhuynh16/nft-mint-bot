@@ -1,6 +1,6 @@
 import { getAddress, type Account, type Chain, type PublicClient, type Transport } from 'viem';
 import { randomUUID } from 'node:crypto';
-import { config as loadDotenv } from 'dotenv';
+import { describeEnvSearch, loadEnvFile } from '../config/env.js';
 import { loadConfig } from '../config/loader.js';
 import { resolveChain, type ResolvedChain } from '../chains/registry.js';
 import {
@@ -25,6 +25,13 @@ import { Metrics } from '../observability/metrics.js';
 import { createLogger, type Logger } from '../observability/logger.js';
 import type { BotConfig } from '../config/schema.js';
 import type { MintProvider } from '../providers/mint-provider.js';
+
+/** Set from the global --env-file option before any command builds a context. */
+let envFileOverride: string | undefined;
+
+export function setEnvFileOverride(path: string | undefined): void {
+  envFileOverride = path;
+}
 
 export interface CliOverrides {
   quantity?: number;
@@ -92,12 +99,22 @@ export function createContext(
   configPath: string,
   overrides: CliOverrides = {},
 ): BotContext {
-  loadDotenv({ quiet: true });
+  const env = loadEnvFile(envFileOverride);
 
   const runId = randomUUID();
   const logger = createLogger({ runId });
+  logger.debug({ envFile: env.loaded ?? null, searched: env.searched }, 'environment loaded');
 
-  const { config, path } = loadConfig(configPath);
+  let config: BotConfig;
+  let path: string;
+  try {
+    ({ config, path } = loadConfig(configPath));
+  } catch (error) {
+    // A missing variable is nearly always a missing env *file*, so say which files were
+    // considered rather than leaving the operator to guess which .env was meant.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\n\n  ${describeEnvSearch(env)}`);
+  }
 
   if (overrides.collectionSlug) config.mint.collectionSlug = overrides.collectionSlug;
   if (overrides.quantity !== undefined) config.mint.quantity = overrides.quantity;

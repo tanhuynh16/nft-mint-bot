@@ -67,12 +67,19 @@ RPC_PRIMARY=https://rpc.mainnet.chain.robinhood.com
 SEQUENCER_URL=https://sequencer.mainnet.chain.robinhood.com
 EOF
 
-chown root:root /etc/nft-mint-bot/env
+chown mintbot:mintbot /etc/nft-mint-bot/env
 chmod 600 /etc/nft-mint-bot/env
 ```
 
-Root-owned and `600`: systemd reads it while starting the unit, the service user never
-can. Keep it out of `/opt/nft-mint-bot` so it can never be caught by a `git add`.
+Owned by the service user and `600`. systemd reads it as root while starting the unit,
+and `mintbot` can read it when you run CLI commands as that user — which you need, since
+`schedule add` and `doctor` do not run under systemd. Root-only ownership buys nothing
+here (the process already holds the key in memory) and breaks every manual command.
+
+Keep it out of `/opt/nft-mint-bot` so it can never be caught by a `git add`.
+
+The bot finds this file on its own: it looks for `--env-file`, then `$MINT_BOT_ENV_FILE`,
+then `./.env`, then `/etc/nft-mint-bot/env`. Nothing extra to pass.
 
 ## 4. Start
 
@@ -113,6 +120,7 @@ unattended — read the numbers before answering. `--yes` skips it for scripting
 
 You do not convert timezones: `add` reads the stage time from OpenSea. Use
 `--at 2026-09-01T14:00:00Z` only for a drop OpenSea has not listed a stage for yet.
+
 
 ## 6. Verify before trusting it
 
