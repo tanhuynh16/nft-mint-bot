@@ -3,6 +3,7 @@
 import './engine-check.js';
 import { Command } from 'commander';
 import { startCommand } from './start.js';
+import { setEnvFileOverride } from './context.js';
 import { doctorCommand } from './doctor.js';
 import { inspectCommand } from './inspect.js';
 import { paymentsCommand } from './payments.js';
@@ -19,7 +20,14 @@ const program = new Command();
 program
   .name('mint-bot')
   .description('Low-latency EVM NFT mint bot')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option(
+    '--env-file <path>',
+    'env file to load (default: $MINT_BOT_ENV_FILE, ./.env, then /etc/nft-mint-bot/env)',
+  )
+  .hook('preSubcommand', (thisCommand) => {
+    setEnvFileOverride(thisCommand.opts().envFile as string | undefined);
+  });
 
 program
   .command('start')
