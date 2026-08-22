@@ -1,6 +1,6 @@
 import { runMint } from '../cli/start.js';
 import { resolveSchedule } from './time.js';
-import { stageAfter } from './stages.js';
+import { openStages, stageAfter } from './stages.js';
 import { isTerminal, type ScheduledJob, type ScheduleStore } from './store.js';
 import type { DropsApi } from '../opensea/drops.js';
 import type { Logger } from '../observability/logger.js';
@@ -25,7 +25,7 @@ export interface RunnerOptions {
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface TickResult {
-  action: 'idle' | 'slept' | 'fired' | 'reresolved';
+  action: 'idle' | 'slept' | 'fired' | 'reresolved' | 'skipped';
   jobId?: string;
   detail?: string;
 }
@@ -128,6 +128,16 @@ export class ScheduleRunner {
 
     if (untilFire > 0) await this.sleep(untilFire);
 
+    // A stage can close while the daemon is down, or while a distant job waits. Building
+    // a transaction against a closed stage cannot succeed, so fail cleanly rather than
+    // spend gas proving it.
+    const closed = await this.stageClosed(job);
+    if (closed) {
+      this.store.update(job.id, { status: 'failed', error: closed });
+      this.logger.warn({ jobId: job.id, reason: closed }, 'stage closed; not firing');
+      return { action: 'skipped', jobId: job.id, detail: closed };
+    }
+
     await this.fire(job);
     return { action: 'fired', jobId: job.id };
   }
@@ -140,6 +150,36 @@ export class ScheduleRunner {
       if (result.action === 'idle') await this.sleep(30_000);
     }
     this.logger.info('scheduler stopped');
+  }
+
+  /**
+   * Returns a reason when the job's stage has already closed, otherwise undefined.
+   *
+   * Only skips on positive evidence: a job with no recorded stage, or a drop the API
+   * cannot be read for, still fires. Being wrong in that direction merely wastes an
+   * attempt; being wrong the other way silently skips a drop that was mintable.
+   */
+  private async stageClosed(job: ScheduledJob): Promise<string | undefined> {
+    if (!job.stageLabel) return undefined;
+
+    try {
+      const drop = await this.drops.getDrop(job.slug);
+      const open = openStages(drop, this.now());
+      if (open.some((s) => s.label.toLowerCase() === job.stageLabel!.toLowerCase())) {
+        return undefined;
+      }
+
+      const ended = drop.stages.find(
+        (s) => (s.label ?? '').toLowerCase() === job.stageLabel!.toLowerCase(),
+      );
+      return (
+        `stage "${job.stageLabel}" closed` +
+        (ended?.end_time ? ` at ${ended.end_time}` : '') +
+        ` — it was no longer open when the scheduler reached this job`
+      );
+    } catch {
+      return undefined;
+    }
   }
 
   /** Recognises "this wallet is not on the list" as distinct from a hard failure. */
