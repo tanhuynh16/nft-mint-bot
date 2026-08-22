@@ -174,6 +174,11 @@ const scheduleSchema = z.object({
   dir: z.string().default('.schedule'),
   /** How long before a job's fire time the daemon wakes and hands off to the poller. */
   leadTimeMs: z.number().int().positive().default(120_000),
+  /**
+   * Longest single sleep while waiting. Bounds how long a job added from the CLI can go
+   * unnoticed; it does not affect firing accuracy, which is governed by leadTimeMs.
+   */
+  maxNapMs: z.number().int().positive().default(60_000),
 });
 
 export const configSchema = z

@@ -168,6 +168,17 @@ handing off to the stage poller that tightens to 200ms near the open. That split
 deliberate: polling OpenSea every 15 seconds for hours would exhaust the rate limit and
 buy nothing.
 
+No single sleep exceeds `schedule.maxNapMs` (60s), so a job added while the daemon is
+waiting is picked up within a minute — immediately, when the schedule-file watcher fires.
+That bound governs *discovery* only; once a job is inside the lead window the daemon
+sleeps the exact remaining time, so firing accuracy is unaffected. Re-checking stage
+times with OpenSea runs on its own 15-minute clock, so waking more often does not cost
+more API calls.
+
+Jobs due at the same instant fire **one after another**, a few seconds apart. That is
+deliberate: the nonce manager is single-writer per wallet, and concurrent runs would race
+on nonce allocation with one transaction silently replacing another.
+
 For unattended operation on a server, see [deploy/README.md](deploy/README.md) — systemd
 unit, hardening, and the plain risks of putting a funded key on a rented box.
 

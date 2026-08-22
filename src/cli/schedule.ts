@@ -211,6 +211,7 @@ export async function scheduleRunCommand(configPath: string, once = false): Prom
     drops: ctx.drops,
     logger: ctx.logger,
     leadTimeMs: ctx.config.schedule.leadTimeMs,
+    maxNapMs: ctx.config.schedule.maxNapMs,
   });
 
   // systemd sends SIGTERM on stop and restart; finish cleanly rather than dying
