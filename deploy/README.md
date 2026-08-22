@@ -121,6 +121,25 @@ unattended — read the numbers before answering. `--yes` skips it for scripting
 You do not convert timezones: `add` reads the stage time from OpenSea. Use
 `--at 2026-09-01T14:00:00Z` only for a drop OpenSea has not listed a stage for yet.
 
+### Which stage a job targets
+
+Most drops have several stages — a team presale, one or two allowlist rounds, then the
+public sale. `add` targets the **public sale** by default, because that is the one any
+wallet can use. Following the earliest stage instead would aim the job at a presale,
+have it rejected, and let the public mint pass while you slept.
+
+```bash
+# default: the public sale
+schedule add the-doll-club-nfts --config config/robinhood.yaml --quantity 1
+
+# deliberately aim at a presale you are allowlisted for
+schedule add the-doll-club-nfts --config config/robinhood.yaml --stage GTD
+```
+
+`add` warns when the chosen stage gates on an allowlist. If such a stage does reject the
+wallet at fire time, the job advances to the next stage rather than failing — so one job
+can try GTD, then FCFS, then PUBLIC. It will not advance into a stage that costs more
+than the ceiling you authorised.
 
 ## 6. Verify before trusting it
 
