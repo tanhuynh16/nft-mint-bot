@@ -179,13 +179,51 @@ Restart safety is worth testing once, deliberately: `systemctl stop` while a job
 waiting, then `start`. The job should come back as `pending`, not vanish and not
 double-fire.
 
+## Upgrading
+
+```bash
+cd /opt/nft-mint-bot
+sudo ./deploy/upgrade.sh
+```
+
+The script pulls, installs, builds, restarts, and then **verifies the service is still
+running twenty seconds later** — printing the last journal lines and exiting non-zero if
+not. That last step is why it exists: a restart looks successful even when the service is
+crash-looping behind it, which is exactly how a fatal misconfiguration once ran unnoticed
+for nine hours and cost a scheduled drop.
+
+Every step that writes into the install runs as `mintbot`. Running them as root does not
+work and should not be forced to: the repo is owned by the service user, so git refuses
+with *"detected dubious ownership"*, and an npm build as root would leave root-owned
+`node_modules/` and `dist/` inside a tree `mintbot` owns — which breaks later rather than
+immediately.
+
+Adding `safe.directory` to silence that git error is the wrong fix for the same reason.
+
+If you prefer to do it by hand, the equivalent is:
+
+```bash
+sudo -u mintbot -H git pull --ff-only
+sudo -u mintbot -H npm ci
+sudo -u mintbot -H npm run build
+sudo systemctl reset-failed nft-mint-bot
+sudo systemctl restart nft-mint-bot
+systemctl status nft-mint-bot        # then check it again a minute later
+```
+
+If an earlier root-run build already left root-owned files, repair once with:
+
+```bash
+sudo chown -R mintbot:mintbot /opt/nft-mint-bot
+```
+
 ## Operating notes
 
 - **Funding.** The bot stops at its affordability guard rather than sending a doomed
   transaction, so an underfunded wallet means a silently missed drop. Check the balance
   against what `schedule list` says is queued.
-- **Upgrades.** `git pull && npm ci && npm run build && systemctl restart nft-mint-bot`.
-  The schedule and journal survive; they live outside the build.
+- **Upgrades.** `sudo ./deploy/upgrade.sh`. The schedule and journal survive; they live
+  outside the build. See below for why it is a script.
 - **A job left `running`** after a crash is marked failed and *not* re-fired. That is
   deliberate: the transaction may already have been broadcast. Check `.journal/` and the
   chain, then reschedule if it genuinely never landed.
