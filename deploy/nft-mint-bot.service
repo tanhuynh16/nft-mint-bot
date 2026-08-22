@@ -6,14 +6,23 @@ Documentation=https://github.com/tanhuynh16/nft-mint-bot
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
 
+# Stop after repeated failures instead of looping invisibly. RestartSec=10 matches
+# systemd's default StartLimitIntervalSec of 10s, so restarts never accumulate inside
+# the window and the burst limit never trips — which is how a fatal misconfiguration
+# once looped 3278 times unnoticed and cost a scheduled drop. A unit sitting in
+# `failed` is visible; an endless restart counter is not.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=mintbot
 Group=mintbot
 WorkingDirectory=/opt/nft-mint-bot
 
-# The private key and API key live here. Root-owned, chmod 600, readable only by
-# systemd when it starts the unit — never world-readable on disk.
+# The private key and API key live here: owned by the service user, chmod 600. systemd
+# reads it as root while starting the unit, and the same user can read it when running
+# CLI commands by hand, which do not go through systemd.
 EnvironmentFile=/etc/nft-mint-bot/env
 
 ExecStart=/usr/bin/node dist/cli/index.js schedule run --config config/robinhood.yaml
@@ -47,8 +56,16 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# DO NOT add MemoryDenyWriteExecute=true here.
+#
+# It blocks V8's JIT mprotect(W->X). V8 asserts the failure errno is ENOMEM; MDWE
+# returns EPERM, the internal CHECK fails, and node aborts with SIGTRAP during
+# BaselineCompiler::Build. The service then crash-loops without ever running a job.
+# Every JIT runtime (node, deno, bun, JVM, PyPy) has this incompatibility. Nothing here
+# can work around it short of --jitless, which is far too slow for a latency-sensitive
+# mint.
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 

@@ -87,8 +87,28 @@ then `./.env`, then `/etc/nft-mint-bot/env`. Nothing extra to pass.
 cp /opt/nft-mint-bot/deploy/nft-mint-bot.service /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now nft-mint-bot
-systemctl status nft-mint-bot
 ```
+
+**Check that it actually stayed up.** A service can start, crash, and be restarted
+forever without anything obvious being wrong:
+
+```bash
+systemctl status nft-mint-bot
+#   want: "active (running)"
+#   bad:  a "restart counter is at N" that climbs each time you look — that is a
+#         crash loop, and no job will ever fire
+
+journalctl -u nft-mint-bot -n 30
+#   want: "scheduler started"
+#   bad:  a V8 native stack trace — a systemd hardening directive is blocking the
+#         JIT. See the MemoryDenyWriteExecute note in the unit file.
+```
+
+Wait a minute and run `systemctl status` again. If the counter has not moved, it is up.
+
+Note for anyone tightening the unit later: **hardening must be tested against a JIT
+runtime.** `MemoryDenyWriteExecute=true` looks like an obvious win and makes node abort
+on startup every time.
 
 Logs are structured JSON in the journal. The logger redacts key material by
 construction, so these are safe to read and paste:
