@@ -1,0 +1,41 @@
+# Robinhood Chain mainnet (4663) — Arbitrum Orbit, FCFS sequencing.
+#
+# Ordering is decided by arrival time at the sequencer, not by fee. Raising gas here
+# buys nothing. The levers that matter are: submitting straight to the sequencer,
+# warm connections, and (in race mode) a pre-signed transaction.
+network:
+  name: robinhood
+  chainId: 4663
+  orderingModel: fcfs
+  feeModel: orbit
+  blockExplorerUrl: https://robinhoodchain.blockscout.com
+
+rpc:
+  endpoints:
+    - ${RPC_PRIMARY}
+  submitEndpoint: ${SEQUENCER_URL}
+  parallelBroadcast: false
+  timeoutMs: 10000
+
+mint:
+  collectionSlug: xcopunks
+  quantity: 1
+  maxRetries: 20
+  retryDelayMs: 100
+  waitForStage: true
+
+gas:
+  strategy: normal
+  maxGasGwei: 10
+  gasLimitBuffer: 1.3
+
+execution:
+  mode: preflight
+  waitForConfirmation: true
+  confirmationBlocks: 1
+  presign: false
+
+wallet:
+  privateKeyEnv: PRIVATE_KEY
+  # Uncomment and set to the intended mint wallet as a guard against loading a stray key.
+  # expectedAddress: "0x..."

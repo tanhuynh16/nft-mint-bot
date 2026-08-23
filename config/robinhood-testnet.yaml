@@ -1,0 +1,36 @@
+# Robinhood Chain testnet — rehearse everything here before touching mainnet.
+network:
+  name: robinhood-testnet
+  chainId: 46630
+  orderingModel: fcfs
+  feeModel: orbit
+  blockExplorerUrl: https://explorer.testnet.chain.robinhood.com
+
+rpc:
+  endpoints:
+    - ${TESTNET_RPC_PRIMARY}
+  submitEndpoint: ${TESTNET_SEQUENCER_URL}
+  parallelBroadcast: false
+  timeoutMs: 10000
+
+mint:
+  collectionSlug: xcopunks
+  quantity: 1
+  maxRetries: 20
+  retryDelayMs: 100
+  waitForStage: true
+
+gas:
+  # Orbit L2 base fee sits around 0.01 gwei. This ceiling is ~1000x headroom and still
+  # cheap; it exists to cap a runaway estimate, not to bid for position.
+  strategy: normal
+  maxGasGwei: 10
+  gasLimitBuffer: 1.3
+
+execution:
+  mode: preflight
+  waitForConfirmation: true
+  confirmationBlocks: 1
+
+wallet:
+  privateKeyEnv: PRIVATE_KEY
