@@ -1,5 +1,10 @@
-import { createContext, resolveProvider, type CliOverrides } from './context.js';
-import { loadConfig } from '../config/loader.js';
+import {
+  createContext,
+  getEnvFileOverride,
+  resolveProvider,
+  type CliOverrides,
+} from './context.js';
+import { loadBotConfig } from '../config/loader.js';
 import { walletSpecs } from '../wallet/signer.js';
 import { MintOrchestrator, type MintOutcome } from '../tx/orchestrator.js';
 import { OpenSeaDropProvider } from '../providers/opensea-drop-provider.js';
@@ -200,7 +205,7 @@ export async function runMintAllWallets(
   configPath: string,
   options: StartOptions = {},
 ): Promise<WalletRunResult[]> {
-  const { config } = loadConfig(configPath);
+  const { config } = loadBotConfig(configPath, getEnvFileOverride());
   const specs = walletSpecs(config);
 
   const settled = await Promise.allSettled(
@@ -233,7 +238,7 @@ export async function runMintForSchedule(
   configPath: string,
   options: StartOptions = {},
 ): Promise<MintRunResult> {
-  const { config } = loadConfig(configPath);
+  const { config } = loadBotConfig(configPath, getEnvFileOverride());
   if (walletSpecs(config).length <= 1) return runMint(configPath, options);
 
   const results = await runMintAllWallets(configPath, options);
@@ -265,7 +270,7 @@ export async function startCommand(
   configPath: string,
   options: StartOptions = {},
 ): Promise<number> {
-  const { config } = loadConfig(configPath);
+  const { config } = loadBotConfig(configPath, getEnvFileOverride());
   const multi = options.allWallets && walletSpecs(config).length > 1;
 
   if (multi) {

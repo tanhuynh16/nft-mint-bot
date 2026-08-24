@@ -1,7 +1,6 @@
 import { getAddress, type Account, type Chain, type PublicClient, type Transport } from 'viem';
 import { randomUUID } from 'node:crypto';
-import { describeEnvSearch, loadEnvFile } from '../config/env.js';
-import { loadConfig } from '../config/loader.js';
+import { loadBotConfig } from '../config/loader.js';
 import { resolveChain, type ResolvedChain } from '../chains/registry.js';
 import {
   defaultRpcUrls,
@@ -31,6 +30,11 @@ let envFileOverride: string | undefined;
 
 export function setEnvFileOverride(path: string | undefined): void {
   envFileOverride = path;
+}
+
+/** The --env-file value, for entry points that read config before building a context. */
+export function getEnvFileOverride(): string | undefined {
+  return envFileOverride;
 }
 
 export interface CliOverrides {
@@ -101,22 +105,11 @@ export function createContext(
   configPath: string,
   overrides: CliOverrides = {},
 ): BotContext {
-  const env = loadEnvFile(envFileOverride);
-
   const runId = randomUUID();
   const logger = createLogger({ runId });
-  logger.debug({ envFile: env.loaded ?? null, searched: env.searched }, 'environment loaded');
 
-  let config: BotConfig;
-  let path: string;
-  try {
-    ({ config, path } = loadConfig(configPath));
-  } catch (error) {
-    // A missing variable is nearly always a missing env *file*, so say which files were
-    // considered rather than leaving the operator to guess which .env was meant.
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`${message}\n\n  ${describeEnvSearch(env)}`);
-  }
+  // loadBotConfig owns the env-then-config ordering and reports the paths it searched.
+  const { config, path } = loadBotConfig(configPath, envFileOverride);
 
   if (overrides.collectionSlug) config.mint.collectionSlug = overrides.collectionSlug;
   if (overrides.quantity !== undefined) config.mint.quantity = overrides.quantity;

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { configSchema, type BotConfig } from './schema.js';
+import { describeEnvSearch, loadEnvFile } from './env.js';
 
 /**
  * Substitutes ${VAR} and ${VAR:-default} references from the environment.
@@ -53,6 +54,32 @@ function interpolate(value: unknown, env: NodeJS.ProcessEnv, path: string[] = []
 export interface LoadedConfig {
   config: BotConfig;
   path: string;
+}
+
+/**
+ * Loads the env file, then the config. The only entry point callers should use.
+ *
+ * Config interpolation reads `${VAR}` from the environment, so the env file has to be
+ * loaded first. Leaving that ordering to each caller is how `mint`, `dry-run` and every
+ * scheduled run broke: a new call site read the config before any env file existed and
+ * every `${RPC_PRIMARY}` was unset.
+ *
+ * Fixing the call sites would have left the next one free to repeat it. Folding the
+ * ordering in here makes the mistake unrepresentable, and puts the "which files did we
+ * look in" report on every failure rather than only the one caller that remembered it.
+ *
+ * `loadEnvFile` is idempotent — dotenv never overwrites an existing variable — so calling
+ * this from several entry points in one process is safe.
+ */
+export function loadBotConfig(configPath: string, envFileOverride?: string): LoadedConfig {
+  const env = loadEnvFile(envFileOverride);
+
+  try {
+    return loadConfig(configPath);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\n\n  ${describeEnvSearch(env)}`);
+  }
 }
 
 export function loadConfig(

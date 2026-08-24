@@ -55,11 +55,13 @@ program
   .option('-q, --quantity <n>', 'override mint.quantity', (v) => Number.parseInt(v, 10))
   .option('--contract <address>', 'mint contract, for the direct SeaDrop path')
   .option('--local', 'force local calldata encoding instead of the OpenSea API')
+  .option('--all-wallets', 'rehearse from every configured wallet, without broadcasting')
   .action(async (options) => {
     process.exitCode = await startCommand(options.config, {
       quantity: options.quantity,
       contract: options.contract,
       local: options.local,
+      allWallets: options.allWallets,
       mode: 'dry-run',
     });
   });
