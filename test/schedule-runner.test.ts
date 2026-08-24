@@ -126,9 +126,12 @@ describe('rate-limit guard', () => {
     const result = await runner.tick();
 
     expect(result.action).toBe('fired');
+    // allWallets: a per-wallet cap means one wallet can only win its own allocation, so a
+    // scheduled job fires from every configured wallet.
     expect(mint).toHaveBeenCalledWith('config/robinhood.yaml', {
       collectionSlug: 'testnftprofile',
       quantity: 1,
+      allWallets: true,
     });
   });
 

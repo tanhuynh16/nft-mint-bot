@@ -1,10 +1,21 @@
 import { createContext, resolveProvider, type CliOverrides } from './context.js';
+import { loadConfig } from '../config/loader.js';
+import { walletSpecs } from '../wallet/signer.js';
 import { MintOrchestrator, type MintOutcome } from '../tx/orchestrator.js';
 import { OpenSeaDropProvider } from '../providers/opensea-drop-provider.js';
-import { armTransaction, revalidateArmed, verifyLocalEncoding } from '../tx/presign.js';
+import {
+  armTransaction,
+  revalidateArmed,
+  verifyAgainstChain,
+  verifyLocalEncoding,
+  waitForContractConfigured,
+} from '../tx/presign.js';
 import { PlanExecutor } from '../tx/plan-executor.js';
+import { StageClock } from '../tx/stage-clock.js';
 
 export interface StartOptions extends CliOverrides {
+  /** Mint from every configured wallet, concurrently. */
+  allWallets?: boolean;
   contract?: string;
   /** Force the direct SeaDrop path even when the Drops API knows the collection. */
   local?: boolean;
@@ -111,6 +122,26 @@ export async function runMint(
       })
     : undefined;
 
+  // The contract's clock beats polling, but only a SeaDrop target can report it. Resolve
+  // the collection address from the provider rather than the config, so it is whatever
+  // this run will actually mint.
+  let stageClock: StageClock | undefined;
+  try {
+    const target = await provider.resolveTarget();
+    if ((target.dropType ?? '').startsWith('seadrop')) {
+      stageClock = new StageClock({
+        publicClient,
+        contractAddress: target.contractAddress,
+        logger,
+      });
+    }
+  } catch (error) {
+    logger.debug(
+      { error: error instanceof Error ? error.message : String(error) },
+      'could not resolve the target for the stage clock; polling instead',
+    );
+  }
+
   const orchestrator = new MintOrchestrator({
     config,
     resolved,
@@ -129,6 +160,7 @@ export async function runMint(
     ...(ctx.payment && usingCrossChain
       ? { paymentPublicClient: ctx.payment.publicClient }
       : {}),
+    ...(stageClock ? { stageClock } : {}),
   });
 
   const outcome = await orchestrator.run();
@@ -150,11 +182,110 @@ export async function runMint(
   return { outcome, ...(explorerUrl ? { explorerUrl } : {}) };
 }
 
+export interface WalletRunResult extends MintRunResult {
+  label: string;
+}
+
+/**
+ * Runs the mint from every configured wallet, concurrently.
+ *
+ * Concurrency is safe here and only here: each wallet has its own nonce sequence, so
+ * they cannot collide the way two runs from one wallet would. Firing them in parallel is
+ * the whole point — sequential wallets would put every wallet after the first several
+ * blocks late, which on a chain producing a block every ~100ms forfeits the race.
+ *
+ * `allSettled`, not `all`: one wallet running out of funds must not cancel the others.
+ */
+export async function runMintAllWallets(
+  configPath: string,
+  options: StartOptions = {},
+): Promise<WalletRunResult[]> {
+  const { config } = loadConfig(configPath);
+  const specs = walletSpecs(config);
+
+  const settled = await Promise.allSettled(
+    specs.map((spec) => runMint(configPath, { ...options, walletEnv: spec.privateKeyEnv })),
+  );
+
+  return settled.map((result, i) => {
+    const label = specs[i]!.label;
+    if (result.status === 'fulfilled') return { label, ...result.value };
+    return {
+      label,
+      outcome: {
+        state: 'FAILED' as const,
+        attempts: 0,
+        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        metrics: {},
+      },
+    };
+  });
+}
+
+/**
+ * Entry point for the scheduler: fans out across wallets, reports one result.
+ *
+ * The daemon tracks a job as a single unit, so the many-wallet outcome is collapsed into
+ * one: success if any wallet minted, and the first winning hash recorded. Per-wallet
+ * detail goes to the log, where it can be read after the fact.
+ */
+export async function runMintForSchedule(
+  configPath: string,
+  options: StartOptions = {},
+): Promise<MintRunResult> {
+  const { config } = loadConfig(configPath);
+  if (walletSpecs(config).length <= 1) return runMint(configPath, options);
+
+  const results = await runMintAllWallets(configPath, options);
+  const won = results.find(
+    (r) => r.outcome.state === 'CONFIRMED' || r.outcome.state === 'PENDING',
+  );
+
+  const summary = results.map((r) => `${r.label}:${r.outcome.state}`).join(' ');
+
+  if (won) {
+    return {
+      outcome: { ...won.outcome, error: summary },
+      ...(won.explorerUrl ? { explorerUrl: won.explorerUrl } : {}),
+    };
+  }
+
+  return {
+    outcome: {
+      state: 'FAILED',
+      attempts: 1,
+      error: `no wallet minted — ${summary}`,
+      metrics: {},
+    },
+  };
+}
+
 /** CLI wrapper: runs the mint, prints the result, maps it to an exit code. */
 export async function startCommand(
   configPath: string,
   options: StartOptions = {},
 ): Promise<number> {
+  const { config } = loadConfig(configPath);
+  const multi = options.allWallets && walletSpecs(config).length > 1;
+
+  if (multi) {
+    const results = await runMintAllWallets(configPath, options);
+    let ok = 0;
+    for (const r of results) {
+      const good = r.outcome.state === 'CONFIRMED' || r.outcome.state === 'PENDING';
+      if (good) ok += 1;
+      // eslint-disable-next-line no-console
+      console.log(
+        `\n${r.label.padEnd(12)} ${r.outcome.state}` +
+          (r.outcome.txHash ? `  ${r.outcome.txHash}` : '') +
+          (r.outcome.error ? `\n  ${r.outcome.error}` : ''),
+      );
+    }
+    // eslint-disable-next-line no-console
+    console.log(`\n${ok}/${results.length} wallets minted.`);
+    return ok > 0 ? 0 : 1;
+  }
+
   const { outcome, explorerUrl } = await runMint(configPath, options);
 
   if (outcome.txHash) {
@@ -189,9 +320,40 @@ async function armFastPath(
     return undefined;
   }
 
-  const reference = new OpenSeaDropProvider(drops, config.mint.collectionSlug, account.address);
+  // Local encoding needs the contract's stage and fee recipient, which creators often
+  // set only shortly before the stage opens. Wait for that rather than failing outright.
+  try {
+    const target = await provider.resolveTarget();
+    const ready = await waitForContractConfigured({
+      publicClient,
+      contractAddress: target.contractAddress,
+      logger,
+    });
+    if (!ready) return undefined;
+  } catch (error) {
+    logger.warn(
+      { error: error instanceof Error ? error.message : String(error) },
+      'could not confirm the contract is configured — pre-sign disabled',
+    );
+    return undefined;
+  }
+
+  // Build once, then verify it two ways. The chain is the authority and works at any
+  // time; OpenSea is a useful second opinion but only answers once a stage is open, so
+  // it can strengthen the check and must never be able to block it.
+  const candidate = await provider.buildMint(BigInt(config.mint.quantity));
+
+  const verdict = await verifyAgainstChain(publicClient, candidate, account.address, logger);
+  if (verdict.kind === 'wrong') {
+    logger.error(
+      { reason: verdict.detail },
+      'refusing to arm: the chain would reject this calldata',
+    );
+    return undefined;
+  }
 
   try {
+    const reference = new OpenSeaDropProvider(drops, config.mint.collectionSlug, account.address);
     const verification = await verifyLocalEncoding(
       provider,
       reference,
@@ -205,12 +367,14 @@ async function armFastPath(
       );
       return undefined;
     }
-  } catch (error) {
-    logger.warn(
-      { error: error instanceof Error ? error.message : String(error) },
-      'could not cross-check calldata against the OpenSea API — pre-sign disabled',
+  } catch {
+    // Expected before a drop opens: the mint endpoint returns 409 until then. The chain
+    // has already vouched for the calldata, so this is not a reason to disarm — the old
+    // behaviour disabled pre-signing precisely when it was needed most.
+    logger.info(
+      { verdict: verdict.kind },
+      'OpenSea has no reference calldata yet; proceeding on the on-chain check alone',
     );
-    return undefined;
   }
 
   const armed = await armTransaction({

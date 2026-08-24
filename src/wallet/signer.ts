@@ -47,6 +47,72 @@ export function loadAccount(config: BotConfig, env: NodeJS.ProcessEnv = process.
   return account;
 }
 
+export interface WalletSpec {
+  privateKeyEnv: string;
+  label: string;
+  expectedAddress?: string;
+}
+
+/**
+ * Every wallet the run should mint from, primary first.
+ *
+ * The primary wallet keeps its existing config shape, so a single-wallet setup is
+ * unchanged and additional wallets are purely additive.
+ */
+export function walletSpecs(config: BotConfig): WalletSpec[] {
+  const primary: WalletSpec = {
+    privateKeyEnv: config.wallet.privateKeyEnv,
+    label: 'primary',
+    ...(config.wallet.expectedAddress ? { expectedAddress: config.wallet.expectedAddress } : {}),
+  };
+
+  const extra = config.wallet.additional.map((w, i) => ({
+    privateKeyEnv: w.privateKeyEnv,
+    label: w.label ?? `wallet-${i + 2}`,
+    ...(w.expectedAddress ? { expectedAddress: w.expectedAddress } : {}),
+  }));
+
+  return [primary, ...extra];
+}
+
+/**
+ * Loads one wallet's key by spec.
+ *
+ * Same rules as the primary: env var only, never echoed, and the derived address is
+ * asserted against expectedAddress when given.
+ */
+export function loadAccountFor(
+  spec: WalletSpec,
+  env: NodeJS.ProcessEnv = process.env,
+): Account {
+  const raw = env[spec.privateKeyEnv];
+
+  if (!raw || raw === '0x') {
+    throw new Error(
+      `Private key env var ${spec.privateKeyEnv} (wallet "${spec.label}") is unset. ` +
+        `Set it in .env, which is gitignored. Never pass a key as a CLI argument.`,
+    );
+  }
+
+  const normalized = raw.startsWith('0x') ? raw : `0x${raw}`;
+  if (!/^0x[a-fA-F0-9]{64}$/.test(normalized)) {
+    throw new Error(
+      `${spec.privateKeyEnv} (wallet "${spec.label}") is not a valid 32-byte hex private key.`,
+    );
+  }
+
+  const account = privateKeyToAccount(normalized as `0x${string}`);
+
+  if (spec.expectedAddress && account.address.toLowerCase() !== spec.expectedAddress.toLowerCase()) {
+    throw new Error(
+      `Wallet "${spec.label}" derives ${account.address}, but expectedAddress is ` +
+        `${spec.expectedAddress}. Refusing to sign with the wrong wallet.`,
+    );
+  }
+
+  return account;
+}
+
 export function createSigner(
   config: BotConfig,
   resolved: ResolvedChain,

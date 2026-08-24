@@ -1,5 +1,6 @@
 import { formatEther } from 'viem';
 import { createContext } from './context.js';
+import { loadAccountFor, walletSpecs } from '../wallet/signer.js';
 
 interface Check {
   name: string;
@@ -71,6 +72,26 @@ export async function doctorCommand(configPath: string): Promise<number> {
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
     });
+  }
+
+  // Each additional wallet is checked too: an unfunded one does not fail loudly, it just
+  // silently forfeits its share of the drop.
+  for (const spec of walletSpecs(config).slice(1)) {
+    try {
+      const extra = loadAccountFor(spec);
+      const balance = await rpc.primary().getBalance({ address: extra.address });
+      checks.push({
+        name: `wallet ${spec.label}`,
+        ok: balance > 0n,
+        detail: `${extra.address} — ${formatEther(balance)} ${config.network.nativeCurrency.symbol}`,
+      });
+    } catch (error) {
+      checks.push({
+        name: `wallet ${spec.label}`,
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   checks.push({

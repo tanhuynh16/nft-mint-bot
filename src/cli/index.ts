@@ -37,12 +37,14 @@ program
   .option('-g, --gas <strategy>', 'override gas.strategy (normal|fast|aggressive|custom)')
   .option('--contract <address>', 'mint contract, for the direct SeaDrop path')
   .option('--local', 'force local calldata encoding instead of the OpenSea API')
+  .option('--all-wallets', 'mint concurrently from every configured wallet')
   .action(async (options) => {
     process.exitCode = await startCommand(options.config, {
       quantity: options.quantity,
       gas: options.gas,
       contract: options.contract,
       local: options.local,
+      allWallets: options.allWallets,
     });
   });
 

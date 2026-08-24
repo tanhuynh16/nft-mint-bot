@@ -184,15 +184,33 @@ export class SeaDropProvider implements MintProvider {
     return 'retryable';
   }
 
+  /**
+   * The fee recipient mintPublic requires.
+   *
+   * Must come from `getAllowedFeeRecipients`, not `getCreatorPayoutAddress`. Using the
+   * creator payout looks plausible and reverts `FeeRecipientNotAllowed` every time — a
+   * pre-signed transaction built that way would have burned its nonce on a guaranteed
+   * failure. On Robinhood the allowed recipient is OpenSea's fee collector, which is
+   * also what the Drops API puts in its own calldata.
+   */
   private async resolveFeeRecipient(): Promise<Address> {
     if (this.feeRecipient) return this.feeRecipient;
-    const creator = await this.client.readContract({
+
+    const allowed = await this.client.readContract({
       address: this.seadrop,
       abi: seaDropAbi,
-      functionName: 'getCreatorPayoutAddress',
+      functionName: 'getAllowedFeeRecipients',
       args: [this.options.contractAddress],
     });
-    this.feeRecipient = getAddress(creator);
+
+    if (allowed.length === 0) {
+      throw new Error(
+        `SeaDrop reports no allowed fee recipients for ${this.options.contractAddress}; ` +
+          `cannot build mintPublic calldata locally.`,
+      );
+    }
+
+    this.feeRecipient = getAddress(allowed[0]!);
     return this.feeRecipient;
   }
 }

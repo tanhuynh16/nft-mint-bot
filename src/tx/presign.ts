@@ -1,4 +1,14 @@
-import type { Account, Chain, Hex, PublicClient, Transport, WalletClient } from 'viem';
+import { decodeErrorResult } from 'viem';
+import type {
+  Account,
+  Address,
+  Chain,
+  Hex,
+  PublicClient,
+  Transport,
+  WalletClient,
+} from 'viem';
+import { SEADROP_ADDRESS, seaDropAbi } from '../providers/seadrop-abi.js';
 import type { BotConfig } from '../config/schema.js';
 import type { ResolvedChain } from '../chains/registry.js';
 import type { MintProvider, UnsignedTx } from '../providers/mint-provider.js';
@@ -11,6 +21,111 @@ export interface VerificationResult {
   local: UnsignedTx;
   reference: UnsignedTx;
   differences: string[];
+}
+
+/**
+ * Pulls SeaDrop's custom error name out of a viem call failure.
+ *
+ * Walks the cause chain for raw revert data, then decodes it against the error entries in
+ * seaDropAbi. Without this the only thing available is "execution reverted", which cannot
+ * distinguish a wrong fee recipient from a stage that has not opened.
+ */
+export function decodeSeaDropRevert(error: unknown): string | undefined {
+  let cursor = error as { cause?: unknown; data?: unknown } | undefined;
+
+  for (let depth = 0; depth < 8 && cursor; depth += 1) {
+    const raw = cursor.data;
+    const candidate =
+      typeof raw === 'string'
+        ? raw
+        : raw && typeof raw === 'object' && typeof (raw as { data?: unknown }).data === 'string'
+          ? (raw as { data: string }).data
+          : undefined;
+
+    if (candidate && candidate.startsWith('0x') && candidate.length >= 10) {
+      try {
+        return decodeErrorResult({ abi: seaDropAbi, data: candidate as Hex }).errorName;
+      } catch {
+        /* not one of SeaDrop's errors */
+      }
+    }
+    cursor = cursor.cause as typeof cursor;
+  }
+
+  return undefined;
+}
+
+export type ChainVerdict =
+  /** The call would succeed right now. */
+  | { kind: 'ok' }
+  /**
+   * The calldata is structurally correct and the only objection is timing. This is the
+   * expected verdict when arming ahead of a drop, and it is safe to arm on.
+   */
+  | { kind: 'not-yet'; detail: string }
+  /** The call would never succeed as built. Refuse to arm. */
+  | { kind: 'wrong'; detail: string };
+
+/**
+ * Verifies pre-signed calldata against the chain rather than against OpenSea.
+ *
+ * The OpenSea cross-check cannot help before a race: its mint endpoint returns 409 until
+ * a stage is open, so requiring it disabled pre-signing in exactly the situation
+ * pre-signing exists for. An `eth_call` works at any time and answers a sharper
+ * question — SeaDrop's own reverts distinguish "wrong calldata" from "right calldata,
+ * wrong moment".
+ *
+ * `NotActive` is therefore a pass. `FeeRecipientNotAllowed`, `IncorrectPayment` and the
+ * quantity errors are hard failures: those would still be wrong when the stage opens.
+ */
+export async function verifyAgainstChain(
+  publicClient: PublicClient<Transport, Chain>,
+  tx: UnsignedTx,
+  from: Address,
+  logger: Logger,
+): Promise<ChainVerdict> {
+  try {
+    await publicClient.call({ account: from, to: tx.to, data: tx.data, value: tx.value });
+    logger.info('pre-flight call succeeded — calldata is valid and the stage is open');
+    return { kind: 'ok' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // A raw eth_call carries no ABI, so viem reports "reverted for an unknown reason"
+    // and the error *name* never appears in the message. Pull the revert data out of the
+    // cause chain and decode it, or every verdict collapses to "wrong".
+    const decoded = decodeSeaDropRevert(error);
+    const name = decoded ?? '';
+
+    if (name === 'NotActive' || /NotActive/i.test(message)) {
+      logger.info('pre-flight call reverted NotActive — calldata is valid, stage not open yet');
+      return { kind: 'not-yet', detail: 'stage has not opened' };
+    }
+
+    // Everything below is still wrong once the clock moves, so arming would burn a nonce
+    // on a transaction that cannot succeed.
+    for (const known of [
+      'FeeRecipientNotAllowed',
+      'IncorrectPayment',
+      'MintQuantityCannotBeZero',
+      'MintQuantityExceedsMaxMintedPerWallet',
+      'MintQuantityExceedsMaxSupply',
+      'MintQuantityExceedsMaxTokenSupplyForStage',
+    ]) {
+      if (name === known || message.includes(known)) {
+        logger.error({ error: known }, 'pre-flight call rejected the calldata');
+        return { kind: 'wrong', detail: known };
+      }
+    }
+
+    // Insufficient balance is about funding, not calldata — but it would still fail at
+    // T0, so it is not something to arm through.
+    if (/insufficient funds/i.test(message)) {
+      return { kind: 'wrong', detail: 'insufficient funds' };
+    }
+
+    logger.warn({ error: message.slice(0, 200) }, 'pre-flight call failed for an unknown reason');
+    return { kind: 'wrong', detail: message.slice(0, 120) };
+  }
 }
 
 export interface ArmedTransaction {
@@ -59,6 +174,90 @@ export async function verifyLocalEncoding(
   }
 
   return { matches, local, reference, differences };
+}
+
+export interface ArmWhenReadyOptions {
+  publicClient: PublicClient<Transport, Chain>;
+  contractAddress: Address;
+  logger: Logger;
+  /** Give up waiting for the contract to be configured after this long. */
+  timeoutMs?: number;
+  pollMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Waits until the contract actually has a public stage configured.
+ *
+ * Observed on a real drop: OpenSea publishes the schedule days ahead, but
+ * `getPublicDrop` returns all zeroes and `getAllowedFeeRecipients` is empty until the
+ * creator configures the stage on-chain — often shortly before it opens. Local calldata
+ * cannot be built before that, so pre-signing has a genuine window rather than being
+ * armable at will.
+ *
+ * Polls the chain, not OpenSea: these are cheap reads against our own RPC with no rate
+ * limit to exhaust.
+ */
+export async function waitForContractConfigured(
+  options: ArmWhenReadyOptions,
+): Promise<boolean> {
+  const {
+    publicClient,
+    contractAddress,
+    logger,
+    timeoutMs = 10 * 60_000,
+    pollMs = 2_000,
+    now = () => Date.now(),
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  } = options;
+
+  const deadline = now() + timeoutMs;
+  let announced = false;
+
+  for (;;) {
+    try {
+      const [drop, fees] = await Promise.all([
+        publicClient.readContract({
+          address: SEADROP_ADDRESS as Address,
+          abi: seaDropAbi,
+          functionName: 'getPublicDrop',
+          args: [contractAddress],
+        }),
+        publicClient.readContract({
+          address: SEADROP_ADDRESS as Address,
+          abi: seaDropAbi,
+          functionName: 'getAllowedFeeRecipients',
+          args: [contractAddress],
+        }),
+      ]);
+
+      if (Number(drop.startTime) > 0 && fees.length > 0) {
+        logger.info(
+          { startTime: new Date(Number(drop.startTime) * 1000).toISOString() },
+          'contract now has a public stage configured; can arm',
+        );
+        return true;
+      }
+    } catch {
+      /* not configured yet */
+    }
+
+    if (now() >= deadline) {
+      logger.warn(
+        { contractAddress },
+        'contract still has no public stage configured; pre-sign unavailable, ' +
+          'falling back to building at mint time',
+      );
+      return false;
+    }
+
+    if (!announced) {
+      logger.info('waiting for the creator to configure the public stage on-chain');
+      announced = true;
+    }
+    await sleep(pollMs);
+  }
 }
 
 export interface ArmOptions {

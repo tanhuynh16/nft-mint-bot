@@ -182,6 +182,66 @@ on nonce allocation with one transaction silently replacing another.
 For unattended operation on a server, see [deploy/README.md](deploy/README.md) — systemd
 unit, hardening, and the plain risks of putting a funded key on a rented box.
 
+## Competing in a contested mint
+
+Measured on Robinhood, which produces a block roughly every **100ms** and orders purely
+by arrival at the sequencer — there is no fee auction to win. On `onchainhoodies-`, 76%
+of a 6000 supply went in a single **10-second** window, and one 100ms block held **280
+mints**. Every 100ms of latency costs a block.
+
+The default path spends ~487ms before the transaction leaves (measured on a live mint):
+
+```
+detect 59ms → build 211ms → simulate 54ms → gas 103ms → sign 60ms → broadcast 83ms
+```
+
+Three things close most of that gap:
+
+**The contract's clock, not a poll.** SeaDrop's `getPublicDrop()` states exactly when a
+stage opens, so the wait ends on that instant instead of on a poll tick. The contract is
+also the right authority — it is what reverts — and the bot warns when OpenSea's metadata
+disagrees. Firing happens *at* the start, never before: an early pre-signed transaction
+reverts `NotActive` and its fixed nonce makes it unusable.
+
+**Pre-signing** (`execution.mode: race`, `execution.presign: true`) moves build, gas and
+signing before the window, leaving only `eth_sendRawTransaction` at T0.
+
+Arming is verified against the chain rather than OpenSea, because OpenSea's mint endpoint
+returns 409 until a stage opens — requiring it disabled pre-signing exactly when it was
+needed. An `eth_call` distinguishes *wrong calldata* from *right calldata, wrong moment*:
+`NotActive` is armable, `FeeRecipientNotAllowed` or `IncorrectPayment` are not.
+
+One real constraint: creators often configure the stage on-chain only shortly before it
+opens. Until they do, `getPublicDrop` returns zeroes and local calldata cannot be built,
+so the bot waits for the contract to be configured and falls back to the live path if it
+never is.
+
+**Multiple wallets** (`wallet.additional`, or `--all-wallets`) fire concurrently. Latency
+decides whether *a* wallet wins its allocation; wallet count decides how much you get,
+because the per-wallet cap binds regardless of speed. Concurrency is safe only across
+wallets — each has its own nonce sequence, whereas two runs from one wallet would race on
+nonce allocation.
+
+```yaml
+wallet:
+  privateKeyEnv: PRIVATE_KEY
+  additional:
+    - privateKeyEnv: WALLET_2_KEY
+    - privateKeyEnv: WALLET_3_KEY
+      label: burner
+```
+
+Two things to weigh: this deliberately circumvents the per-wallet cap the drop sets, and
+some projects blocklist for it. It also multiplies funded-key exposure — N keys on one
+host, all spendable. `doctor` checks every wallet's balance, since an unfunded one
+forfeits its share silently.
+
+**What software cannot fix.** The sequencer is in AWS us-east-2 (Ohio):
+`sequencer.mainnet.chain.robinhood.com` resolves to `…ue2v1.rhm.arbitrum-internal.io`.
+Broadcast measured 83ms from the current VPS. Against bots co-located in that region — at
+280 mints per block, some are — a host elsewhere has a floor no amount of local
+optimisation clears. Moving the VPS to us-east-2 is the largest remaining gain.
+
 ## Execution modes
 
 - `dry-run` — build and simulate, never broadcast.

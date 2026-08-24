@@ -3,6 +3,7 @@ import { formatEther } from 'viem';
 import { createContext } from './context.js';
 import { ScheduleStore, isTerminal, type ScheduledJob } from '../schedule/store.js';
 import { ScheduleRunner } from '../schedule/runner.js';
+import { walletSpecs } from '../wallet/signer.js';
 import { describeGap, formatBoth, resolveSchedule } from '../schedule/time.js';
 import type { JobWhen } from '../schedule/store.js';
 
@@ -55,9 +56,12 @@ export async function scheduleAddCommand(
     return 1;
   }
 
+  const wallets = walletSpecs(ctx.config).length;
   const price = resolved.pricePerToken ?? 0n;
+  // Per wallet, because every wallet fires this job.
   const mintCost = price * BigInt(quantity);
   const ceiling = mintCost + GAS_MARGIN_WEI;
+  const totalCost = mintCost * BigInt(wallets);
 
   log(`Schedule a mint`);
   log(`  collection : ${slug}`);
@@ -65,7 +69,10 @@ export async function scheduleAddCommand(
   log(`  wallet     : ${ctx.account.address}`);
   log(`  quantity   : ${quantity}`);
   log(`  price each : ${formatEther(price)} ETH`);
-  log(`  mint cost  : ${formatEther(mintCost)} ETH  (+ gas, capped at ${formatEther(ceiling)})`);
+  log(`  mint cost  : ${formatEther(mintCost)} ETH per wallet  (+ gas, capped at ${formatEther(ceiling)})`);
+  if (wallets > 1) {
+    log(`  wallets    : ${wallets}  ->  total up to ${formatEther(totalCost + GAS_MARGIN_WEI * BigInt(wallets))} ETH`);
+  }
   log(`  stage      : ${resolved.stage ?? 'unknown'}${resolved.stageType ? ` (${resolved.stageType})` : ''}`);
   log(`  fires at   : ${formatBoth(resolved.fireAt)}  ${describeGap(resolved.fireAt)}`);
   if (resolved.activeNow) log(`               (stage is already open — this fires immediately)`);

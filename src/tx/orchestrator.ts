@@ -10,6 +10,7 @@ import type { TxMonitor } from './monitor.js';
 import { simulate } from './simulator.js';
 import { classifyError } from '../retry/classifier.js';
 import type { PlanExecutor } from './plan-executor.js';
+import { StageClock } from './stage-clock.js';
 import type { MintPlan } from '../providers/mint-provider.js';
 import type { Metrics } from '../observability/metrics.js';
 import type { Logger } from '../observability/logger.js';
@@ -58,6 +59,11 @@ export interface OrchestratorDeps {
   planExecutor?: PlanExecutor;
   /** Read client for the payment chain, used for the balance preflight under cross-chain. */
   paymentPublicClient?: PublicClient<Transport, Chain>;
+  /**
+   * Waits on the contract's own stage clock instead of polling. Set when the target is a
+   * SeaDrop contract; the poller remains the fallback.
+   */
+  stageClock?: StageClock;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -161,11 +167,55 @@ export class MintOrchestrator {
    * and a bot asleep past the open is a bot that lost.
    */
   private async waitForActiveStage(): Promise<MintStatus> {
-    const { provider, config, logger, metrics } = this.deps;
+    const { provider, config, logger, metrics, stageClock } = this.deps;
     const deadline =
       config.mint.waitTimeoutMs > 0 ? Date.now() + config.mint.waitTimeoutMs : undefined;
 
     metrics.start('detect');
+
+    // Prefer the contract's clock: polling is late by up to its interval, and on a chain
+    // producing a block every ~100ms that hands a block to everyone else. The contract
+    // also *is* the authority — it is what reverts if we are early.
+    if (stageClock) {
+      const window = await stageClock.readWindow();
+      if (window) {
+        // Read supply and stage metadata *before* the wait. Doing it afterwards would put
+        // an OpenSea round-trip at T0 — the exact 211ms this path exists to remove. The
+        // figures are then slightly stale, which is acceptable: the contract enforces
+        // supply and the per-wallet cap itself, reverting if either is exceeded.
+        const status = await provider.getStatus();
+        stageClock.reportDrift(window, status.nextStage?.startTime?.toISOString());
+
+        const open = await stageClock.waitForOpen(window);
+        if (open) {
+          metrics.end('detect', 'detect');
+          logger.info(
+            {
+              source: 'contract',
+              startedAt: new Date(window.startsAtMs).toISOString(),
+              pricePerToken: window.pricePerToken.toString(),
+              maxPerWallet: window.maxPerWallet.toString(),
+            },
+            'stage open per the contract clock',
+          );
+
+          // Present the contract's own limits, which are authoritative, over whatever
+          // OpenSea reported before the wait.
+          return {
+            ...status,
+            isMinting: true,
+            activeStage: {
+              label: status.activeStage?.label ?? status.nextStage?.label ?? 'public',
+              startTime: new Date(window.startsAtMs),
+              endTime: new Date(window.endsAtMs),
+              pricePerToken: window.pricePerToken,
+              maxPerWallet: window.maxPerWallet,
+              requiresProof: false,
+            },
+          };
+        }
+      }
+    }
 
     for (;;) {
       const status = await provider.getStatus();

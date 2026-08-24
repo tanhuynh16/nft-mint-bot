@@ -34,6 +34,8 @@ export function setEnvFileOverride(path: string | undefined): void {
 }
 
 export interface CliOverrides {
+  /** Which wallet spec this context signs with. Defaults to the primary. */
+  walletEnv?: string;
   quantity?: number;
   gas?: string;
   mode?: string;
@@ -122,6 +124,18 @@ export function createContext(
   if (overrides.mode) config.execution.mode = overrides.mode as BotConfig['execution']['mode'];
 
   const resolved = resolveChain(config);
+
+  // A context is bound to exactly one wallet. Multi-wallet runs build one context per
+  // wallet so each gets its own signer, nonce manager and journal — the journal already
+  // keys on `${chainId}-${address}`, which is what makes the sequences independent and
+  // therefore safe to fire concurrently.
+  if (overrides.walletEnv && overrides.walletEnv !== config.wallet.privateKeyEnv) {
+    // expectedAddress guards the *primary* key. Carrying it over to a substituted wallet
+    // would reject every additional wallet for deriving a different address.
+    config.wallet.privateKeyEnv = overrides.walletEnv;
+    delete config.wallet.expectedAddress;
+  }
+
   const { account, wallet } = createSigner(config, resolved);
   const rpc = new RpcManager(config, resolved, logger);
   const publicClient = rpc.primary();

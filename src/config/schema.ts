@@ -156,6 +156,25 @@ const walletSchema = z.object({
   privateKeyEnv: z.string().min(1).default('PRIVATE_KEY'),
   /** If set, startup asserts the derived address matches. Guards against loading the wrong key. */
   expectedAddress: hexAddress.optional(),
+  /**
+   * Additional wallets to mint from, each naming its own env var.
+   *
+   * Per-wallet caps mean latency decides whether *a* wallet wins its allocation, while
+   * wallet count decides how much you get. Each wallet has an independent nonce sequence,
+   * which is why they can fire concurrently where one wallet cannot.
+   *
+   * Every key listed here is a funded hot key on the same host: N wallets is N times the
+   * exposure, and it deliberately circumvents the per-wallet cap the drop sets.
+   */
+  additional: z
+    .array(
+      z.object({
+        privateKeyEnv: z.string().min(1),
+        label: z.string().optional(),
+        expectedAddress: hexAddress.optional(),
+      }),
+    )
+    .default([]),
 });
 
 const openseaSchema = z.object({

@@ -71,6 +71,63 @@ export const seaDropAbi = [
       },
     ],
   },
+  // Declared so viem decodes reverts by name instead of raw selector bytes. That is
+  // what lets a pre-flight eth_call distinguish "this calldata is wrong" from "this
+  // calldata is correct but the stage has not opened yet" — the difference between
+  // refusing to arm and arming safely ahead of a race.
+  {
+    type: 'error',
+    name: 'NotActive',
+    inputs: [
+      { name: 'currentTimestamp', type: 'uint256' },
+      { name: 'startTimestamp', type: 'uint256' },
+      { name: 'endTimestamp', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'error',
+    name: 'IncorrectPayment',
+    inputs: [
+      { name: 'got', type: 'uint256' },
+      { name: 'want', type: 'uint256' },
+    ],
+  },
+  { type: 'error', name: 'FeeRecipientNotAllowed', inputs: [] },
+  { type: 'error', name: 'MintQuantityCannotBeZero', inputs: [] },
+  {
+    type: 'error',
+    name: 'MintQuantityExceedsMaxMintedPerWallet',
+    inputs: [
+      { name: 'total', type: 'uint256' },
+      { name: 'allowed', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'error',
+    name: 'MintQuantityExceedsMaxSupply',
+    inputs: [
+      { name: 'total', type: 'uint256' },
+      { name: 'maxSupply', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'error',
+    name: 'MintQuantityExceedsMaxTokenSupplyForStage',
+    inputs: [
+      { name: 'total', type: 'uint256' },
+      { name: 'maxTokenSupplyForStage', type: 'uint256' },
+    ],
+  },
+  {
+    // The fee recipient mintPublic must be given. NOT the creator payout address —
+    // SeaDrop reverts FeeRecipientNotAllowed for that, which is how locally-encoded
+    // calldata was found to be wrong before it ever reached a race.
+    type: 'function',
+    name: 'getAllowedFeeRecipients',
+    stateMutability: 'view',
+    inputs: [{ name: 'nftContract', type: 'address' }],
+    outputs: [{ name: '', type: 'address[]' }],
+  },
   {
     type: 'function',
     name: 'getCreatorPayoutAddress',

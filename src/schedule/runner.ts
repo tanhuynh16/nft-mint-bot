@@ -1,6 +1,6 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { dirname } from 'node:path';
-import { runMint } from '../cli/start.js';
+import { runMintForSchedule, type runMint } from '../cli/start.js';
 import { resolveSchedule } from './time.js';
 import { openStages, stageAfter } from './stages.js';
 import { isTerminal, type ScheduledJob, type ScheduleStore } from './store.js';
@@ -73,7 +73,7 @@ export class ScheduleRunner {
     this.maxNapMs = options.maxNapMs ?? 60_000;
     this.now = options.now ?? (() => Date.now());
     this.sleep = options.sleep ?? defaultSleep;
-    this.mint = options.mint ?? runMint;
+    this.mint = options.mint ?? (runMintForSchedule as typeof runMint);
   }
 
   stop(): void {
@@ -372,9 +372,13 @@ export class ScheduleRunner {
     this.store.update(job.id, { status: 'running', attempts: job.attempts + 1 });
 
     try {
+      // Scheduled jobs fire from every configured wallet. A drop's per-wallet cap means
+      // one wallet can only ever win its own allocation, so a scheduled job that used a
+      // single wallet would leave the others idle through the one moment that matters.
       const { outcome } = await this.mint(job.configPath, {
         collectionSlug: job.slug,
         quantity: job.quantity,
+        allWallets: true,
       });
 
       const succeeded = outcome.state === 'CONFIRMED' || outcome.state === 'PENDING';
