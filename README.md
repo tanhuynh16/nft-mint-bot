@@ -9,7 +9,7 @@ straight to the chain.
 The bot models two different worlds, because the strategy that wins in one loses in
 the other:
 
-| | `priority-auction` (Ethereum, Polygon) | `fcfs` (Robinhood, Arbitrum, Base) |
+| | `priority-auction` (Ethereum, Polygon) | `fcfs` (Robinhood, Ink, Arbitrum, Base, Optimism) |
 |---|---|---|
 | Ordering by | effective priority fee | **arrival time at the sequencer** |
 | Raising gas | buys priority | **buys nothing** |
@@ -30,6 +30,21 @@ Against `sequencer.testnet.chain.robinhood.com`:
 
 Warming the connection before the mint window saves ~430 ms — more than any code-level
 optimisation. `doctor` warms and measures it for you.
+
+### Supported chains
+
+| chain | id | ordering | blocks | notes |
+|---|---|---|---|---|
+| Robinhood | 4663 | fcfs | ~100ms | write-only sequencer; `submitEndpoint` required |
+| Ink | 57073 | fcfs | 1s | Kraken OP-Stack; RPC serves reads and sends, no separate sequencer |
+| Base, Optimism | 8453, 10 | fcfs | 2s | OP-Stack |
+| Arbitrum | 42161 | fcfs | ~250ms | Orbit fee model |
+| Ethereum, Polygon | 1, 137 | priority-auction | 12s, 2s | fee escalation matters here |
+
+Block time sets how much latency costs. On Robinhood 100ms is a whole block, so a 487ms
+critical path is five blocks behind. On Ink the same delay is half a block, so most
+competitors land together and intra-block arrival order decides — latency still helps,
+with coarser granularity.
 
 ## Setup
 

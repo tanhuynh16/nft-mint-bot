@@ -23,6 +23,7 @@ rpc:
   # to the matching entry; set the env var to override the public default.
   paymentEndpoints:
     ethereum:  ["${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}"]
+    ink:       ["${INK_RPC:-https://rpc-qnd.inkonchain.com}"]
     base:      ["${BASE_RPC:-https://mainnet.base.org}"]
     arbitrum:  ["${ARBITRUM_RPC:-https://arb1.arbitrum.io/rpc}"]
     optimism:  ["${OPTIMISM_RPC:-https://mainnet.optimism.io}"]

@@ -1,0 +1,72 @@
+# Ink (57073) — Kraken's OP-Stack L2.
+#
+# Single sequencer ordering by arrival, so gas buys no priority here either. Blocks are
+# 1s rather than Robinhood's 100ms, which means sub-second latency differences usually
+# land in the same block and intra-block arrival order decides. Latency still helps; it
+# just has coarser granularity than on Robinhood.
+#
+# No submitEndpoint: Ink's RPC serves reads and eth_sendRawTransaction alike, so writes
+# go to endpoints[0]. That differs from Robinhood, whose sequencer is write-only.
+network:
+  name: ink
+  chainId: 57073
+  orderingModel: fcfs
+  feeModel: eip1559
+  blockExplorerUrl: https://explorer.inkonchain.com
+
+rpc:
+  # rpc-qnd is Cloudflare-fronted and measured roughly twice as fast as rpc-gel from
+  # here. Set INK_RPC in .env to use a private endpoint instead.
+  endpoints:
+    - ${INK_RPC:-https://rpc-qnd.inkonchain.com}
+  parallelBroadcast: false
+  timeoutMs: 10000
+
+  # Networks available for cross-chain payment. Selecting mint.payment.chain switches to
+  # the matching entry; set the env var to override the public default.
+  paymentEndpoints:
+    ink:       ["${INK_RPC:-https://rpc-qnd.inkonchain.com}"]
+    ethereum:  ["${ETHEREUM_RPC:-https://ethereum.reth.rs/rpc}"]
+    base:      ["${BASE_RPC:-https://mainnet.base.org}"]
+    arbitrum:  ["${ARBITRUM_RPC:-https://arb1.arbitrum.io/rpc}"]
+    optimism:  ["${OPTIMISM_RPC:-https://mainnet.optimism.io}"]
+    polygon:   ["${POLYGON_RPC:-https://polygon.drpc.org}"]
+
+mint:
+  # Set this to the drop you actually want. Kept at quantity 1 on purpose: `npm run mint`
+  # spends real funds, so the checked-in target should cost little if it is ever run by
+  # accident. Re-read the price before changing it.
+  collectionSlug: meozonink
+  quantity: 1
+  maxRetries: 20
+  retryDelayMs: 100
+  waitForStage: true
+
+  payment:
+    # native: pay on Ink itself. One transaction, no relay — always the fastest.
+    mode: native
+
+    # cross-chain: pay with a token held elsewhere. Adds a swap, bridge and relay hop.
+    # mode: cross-chain
+    # chain: base
+    # token: "0x0000000000000000000000000000000000000000"
+
+gas:
+  # OP-Stack base fees are a tiny fraction of a gwei. This ceiling is orders of magnitude
+  # of headroom and still cheap; it exists to cap a runaway estimate, not to bid.
+  strategy: normal
+  maxGasGwei: 1
+  gasLimitBuffer: 1.3
+
+execution:
+  mode: preflight
+  waitForConfirmation: true
+  confirmationBlocks: 1
+  presign: false
+
+wallet:
+  privateKeyEnv: PRIVATE_KEY
+  # Additional wallets fire concurrently. Relevant on Ink because drops there commonly
+  # cap at 1 per wallet, where wallet count decides the outcome rather than latency.
+  # additional:
+  #   - privateKeyEnv: WALLET_2_KEY

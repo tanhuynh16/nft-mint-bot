@@ -86,6 +86,26 @@ describe('resolveChain', () => {
     expect(resolved.submitUrl).toBe('https://rpc.example.com');
   });
 
+  it('models Ink as an OP-Stack fcfs chain', () => {
+    // Verified live: chain 57073, single sequencer ordering by arrival, EIP-1559 fees,
+    // and no separate write-only endpoint — its RPC serves reads and sends alike.
+    const profile = getChainProfileBySlug('ink')!;
+    expect(profile.chain.id).toBe(57073);
+    expect(profile.orderingModel).toBe('fcfs');
+    expect(profile.feeModel).toBe('eip1559');
+    expect(profile.sequencerUrl).toBeUndefined();
+  });
+
+  it('falls back to the RPC for writes on Ink, having no sequencer of its own', () => {
+    const resolved = resolveChain(
+      parse({
+        network: { name: 'ink', chainId: 57073, orderingModel: 'fcfs', feeModel: 'eip1559' },
+        rpc: { endpoints: ['https://rpc-qnd.inkonchain.com'] },
+      }),
+    );
+    expect(resolved.submitUrl).toBe('https://rpc-qnd.inkonchain.com');
+  });
+
   it('identifies Ethereum as a priority auction', () => {
     const resolved = resolveChain(
       parse({
@@ -108,7 +128,7 @@ describe('payment chain slugs', () => {
    * the API rejects it — "matic" was wrong for Polygon and only surfaced when a run
    * against that network failed.
    */
-  const OPENSEA_SLUGS = ['ethereum', 'optimism', 'polygon', 'base', 'arbitrum', 'robinhood'];
+  const OPENSEA_SLUGS = ['ethereum', 'optimism', 'polygon', 'base', 'arbitrum', 'robinhood', 'ink'];
 
   it.each(OPENSEA_SLUGS)('resolves the OpenSea slug "%s" to a profile', (slug) => {
     expect(getChainProfileBySlug(slug)).toBeDefined();
@@ -149,7 +169,7 @@ describe('built-in RPC defaults', () => {
 
   it('points each chain at its own network, not a shared one', () => {
     // Guards the class of bug where one chain's endpoint leaks into another's config.
-    const hosts = ['ethereum', 'base', 'arbitrum', 'optimism', 'polygon'].map(
+    const hosts = ['ethereum', 'base', 'arbitrum', 'optimism', 'polygon', 'ink'].map(
       (s) => new URL(defaultRpcUrls(getChainProfileBySlug(s)!)[0]!).host,
     );
     expect(new Set(hosts).size).toBe(hosts.length);

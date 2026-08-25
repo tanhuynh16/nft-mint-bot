@@ -1,5 +1,5 @@
 import { defineChain, type Chain } from 'viem';
-import { mainnet, base, arbitrum, polygon, optimism } from 'viem/chains';
+import { mainnet, base, arbitrum, polygon, optimism, ink } from 'viem/chains';
 import type { FeeModel, OrderingModel } from '../config/schema.js';
 
 /**
@@ -85,6 +85,18 @@ export const CHAIN_PROFILES: Record<number, ChainProfile> = {
     orderingModel: 'fcfs',
     feeModel: 'eip1559',
     openseaChain: 'optimism',
+  },
+  [ink.id]: {
+    // Kraken's OP-Stack L2. Verified live: chain 57073, SeaDrop deployed at the canonical
+    // address, and the RPC serves reads *and* eth_sendRawTransaction — so unlike
+    // Robinhood there is no write-only sequencer to point submitEndpoint at.
+    //
+    // Blocks are 1s, not Robinhood's 100ms. Sub-second latency differences therefore
+    // tend to land in the same block, and intra-block arrival order decides.
+    chain: ink,
+    orderingModel: 'fcfs',
+    feeModel: 'eip1559',
+    openseaChain: 'ink',
   },
   [robinhood.id]: {
     chain: robinhood,
